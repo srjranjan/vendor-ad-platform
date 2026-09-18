@@ -12,7 +12,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, func, text
+from sqlalchemy import (Column, DateTime, ForeignKey, Integer, String,
+                        UniqueConstraint, bindparam, func, text)
 from sqlalchemy.orm import Session
 
 from database import Base, get_db, ist_now, ist_today
@@ -128,6 +129,54 @@ def nearby_places(
     from campaigns import Campaign, CampaignSociety, CampaignStatus, refresh_campaign
     from main import AdTemplate, Place, Vendor
 
+    # Resolve live ads BEFORE choosing which places to return. Picking the
+    # nearest N first and attaching campaigns afterwards meant a promoted place
+    # ranked outside N never appeared, however close it was.
+    today = ist_today()
+    candidates = (
+        db.query(Campaign)
+        .join(Vendor, Vendor.id == Campaign.vendor_id)
+        .filter(
+            Vendor.place_id.isnot(None),
+            Campaign.status.in_([CampaignStatus.ACTIVE.value,
+                                 CampaignStatus.SCHEDULED.value]),
+        )
+        .all()
+    )
+    for c in candidates:
+        refresh_campaign(db, c)
+    if candidates:
+        db.commit()
+
+    eligible = [
+        c for c in candidates
+        if c.status == CampaignStatus.ACTIVE.value
+        and c.start_date <= today <= c.end_date
+    ]
+
+    # Honour what the vendor bought: if the caller names a society, only
+    # campaigns that targeted it may be shown.
+    if society_id and eligible:
+        targeted = {
+            cid for (cid,) in db.query(CampaignSociety.campaign_id).filter(
+                CampaignSociety.campaign_id.in_([c.id for c in eligible]),
+                CampaignSociety.society_id == society_id,
+            ).all()
+        }
+        eligible = [c for c in eligible if c.id in targeted]
+
+    # Newest campaign wins when a vendor is running several.
+    vendor_campaign = {}
+    for c in sorted(eligible, key=lambda c: c.created_at):
+        vendor_campaign[c.vendor_id] = c
+
+    promoted_place_campaign = {}
+    if vendor_campaign:
+        for v in db.query(Vendor).filter(
+            Vendor.id.in_(list(vendor_campaign)), Vendor.place_id.isnot(None)
+        ).all():
+            promoted_place_campaign[v.place_id] = vendor_campaign[v.id]
+
     params = {"lat": lat, "lng": lng, "radius": radius_km, "limit": limit}
     category_clause = ""
     if category:
@@ -139,12 +188,16 @@ def nearby_places(
             " OR LOWER(p.search_category) = LOWER(:category))"
         )
 
-    rows = db.execute(
-        text(
-            f"""
+    SELECT_COLS = """
             SELECT p.id, p.google_place_id, p.name, p.search_category,
                    p.category_label, p.latitude,
                    p.longitude, p.address, p.phone, p.rating, p.image_url,
+    """
+
+    rows = db.execute(
+        text(
+            f"""
+            {SELECT_COLS}
                    {HAVERSINE} AS distance_km
             FROM places p
             WHERE {HAVERSINE} <= :radius
@@ -155,6 +208,26 @@ def nearby_places(
         ),
         params,
     ).mappings().all()
+
+    # Pull in any promoted place that is inside the radius but fell outside the
+    # nearest-N window, so a paid ad is never dropped for being 200th closest.
+    seen = {r["id"] for r in rows}
+    missing = [pid for pid in promoted_place_campaign if pid not in seen]
+    if missing:
+        extra = db.execute(
+            text(
+                f"""
+                {SELECT_COLS}
+                       {HAVERSINE} AS distance_km
+                FROM places p
+                WHERE {HAVERSINE} <= :radius
+                  AND p.id IN :ids
+                {category_clause}
+                """
+            ).bindparams(bindparam("ids", expanding=True)),
+            {**params, "ids": missing},
+        ).mappings().all()
+        rows = list(rows) + list(extra)
 
     place_ids = [r["id"] for r in rows]
     if not place_ids:
@@ -183,52 +256,16 @@ def nearby_places(
             ).all()
         }
 
-    # Vendors that operate one of these places.
-    vendors = {
-        v.place_id: v for v in db.query(Vendor).filter(Vendor.place_id.in_(place_ids)).all()
-    }
-
     campaign_by_place: Dict[int, Any] = {}
-    if vendors:
-        today = ist_today()
-        candidates = db.query(Campaign).filter(
-            Campaign.vendor_id.in_([v.id for v in vendors.values()]),
-            Campaign.status.in_([CampaignStatus.ACTIVE.value,
-                                 CampaignStatus.SCHEDULED.value]),
-        ).all()
-        for c in candidates:
-            refresh_campaign(db, c)
-        db.commit()
-
-        eligible = [
-            c for c in candidates
-            if c.status == CampaignStatus.ACTIVE.value
-            and c.start_date <= today <= c.end_date
-        ]
-
-        # Honour what the vendor bought: if the caller names a society, only
-        # campaigns that targeted it may be shown.
-        if society_id and eligible:
-            targeted = {
-                cid for (cid,) in db.query(CampaignSociety.campaign_id).filter(
-                    CampaignSociety.campaign_id.in_([c.id for c in eligible]),
-                    CampaignSociety.society_id == society_id,
-                ).all()
-            }
-            eligible = [c for c in eligible if c.id in targeted]
-
+    if promoted_place_campaign:
         templates = {
             t.id: t for t in db.query(AdTemplate).filter(
-                AdTemplate.id.in_({c.ad_template_id for c in eligible})
+                AdTemplate.id.in_({c.ad_template_id for c in promoted_place_campaign.values()})
             ).all()
-        } if eligible else {}
-
-        vendor_place = {v.id: v.place_id for v in vendors.values()}
-        # Newest campaign wins when a vendor is running several.
-        for c in sorted(eligible, key=lambda c: c.created_at):
-            pid = vendor_place.get(c.vendor_id)
+        }
+        for pid, c in promoted_place_campaign.items():
             tpl = templates.get(c.ad_template_id)
-            if pid is None or tpl is None:
+            if tpl is None:
                 continue
             campaign_by_place[pid] = CampaignOut(
                 id=c.id,
@@ -268,8 +305,10 @@ def nearby_places(
             isRecommendedByCurrentUser=r["id"] in mine,
         ))
 
-    # Promoted places first, then by distance.
+    # Promoted places first, then by distance. Trimming after this sort keeps
+    # every ad while still honouring limit.
     places.sort(key=lambda p: (not p.isPromoted, p.distanceKm))
+    places = places[:limit]
 
     return NearbyResponse(
         data=NearbyData(
