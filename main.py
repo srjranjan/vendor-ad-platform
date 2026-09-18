@@ -109,6 +109,35 @@ class AdTarget(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Place(Base):
+    """Points of interest scraped around a locality.
+
+    Unlike Society there is no id in the source data, so the primary key is
+    generated and `url` (unique per place) is the natural key the importer
+    matches on.
+    """
+
+    __tablename__ = "places"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    search_category = Column(String(128), nullable=True, index=True)
+    category_label = Column(String(128), nullable=True)
+    phone = Column(String(32), nullable=True)
+    address = Column(String(1024), nullable=True)
+    rating = Column(Float, nullable=True)
+    reviews = Column(Integer, nullable=True)
+    website = Column(String(1024), nullable=True)
+    hours = Column(String(512), nullable=True)
+    image_url = Column(String(1024), nullable=True)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    distance_km = Column(Float, nullable=True)
+    url = Column(String(512), nullable=False, unique=True, index=True)
+    source = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # --------------------------------------------------------------------------
 # Pydantic schemas
 # --------------------------------------------------------------------------

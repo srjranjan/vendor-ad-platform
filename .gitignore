@@ -13,3 +13,4 @@ __pycache__/
 # data exports - re-exportable from BigQuery, keep out of git
 *.xlsx
 *.xls
+*.csv
