@@ -399,23 +399,20 @@ class CampaignDashboard(BaseModel):
     summary: DashboardSummary
     campaigns: List[CampaignListItem]
     total: int
-    limit: int
-    offset: int
 
 
 @campaign_router.get("", response_model=CampaignDashboard)
 def list_campaigns(
     vendor_id: str = Query(..., description="Vendor whose dashboard this is"),
     status: Optional[CampaignStatus] = Query(None, description="Filter to one state"),
-    limit: int = Query(20, gt=0, le=200),
-    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
     """Campaigns for a vendor's dashboard, with portfolio totals.
 
-    Every campaign is refreshed first so a campaign that has silently expired
-    is counted under the state it is actually in. The summary covers the whole
-    portfolio rather than the returned page.
+    Returns every campaign the vendor has - a vendor is not expected to hold
+    enough for paging to be worth the complexity. Each one is refreshed first,
+    so a campaign that has quietly expired is counted under the state it is
+    actually in.
     """
     from main import AdTemplate, Vendor
     from wallet import Wallet
@@ -446,10 +443,9 @@ def list_campaigns(
     selected = [c for c in all_campaigns
                 if status is None or c.status == status.value]
     selected.sort(key=lambda c: c.created_at, reverse=True)
-    page = selected[offset:offset + limit]
 
-    # One query for the whole page instead of touching .societies per row.
-    ids = [c.id for c in page]
+    # One grouped query instead of touching .societies per row.
+    ids = [c.id for c in selected]
     agg = {}
     if ids:
         for cid, count, flats in db.query(
@@ -462,7 +458,7 @@ def list_campaigns(
             agg[cid] = (count, int(flats or 0))
 
     templates = {}
-    tids = {c.ad_template_id for c in page}
+    tids = {c.ad_template_id for c in selected}
     if tids:
         templates = {
             t.id: t for t in db.query(AdTemplate).filter(AdTemplate.id.in_(tids)).all()
@@ -471,7 +467,7 @@ def list_campaigns(
     wallet = db.query(Wallet).filter(Wallet.user_id == vendor_id).first()
 
     items = []
-    for c in page:
+    for c in selected:
         count, flats = agg.get(c.id, (0, 0))
         tpl = templates.get(c.ad_template_id)
         remaining = max(0, c.duration_days - c.days_consumed)
@@ -511,9 +507,7 @@ def list_campaigns(
             wallet_balance=float(wallet.balance) if wallet else 0.0,
         ),
         campaigns=items,
-        total=len(selected),
-        limit=limit,
-        offset=offset,
+        total=len(items),
     )
 
 
