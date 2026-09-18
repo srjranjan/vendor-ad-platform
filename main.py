@@ -4,6 +4,7 @@ from enum import Enum
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import (
     Boolean,
@@ -145,6 +146,23 @@ class AdResponse(BaseModel):
 # --------------------------------------------------------------------------
 
 app = FastAPI(title="Vendor Ad Platform", version="1.0.0")
+
+# Comma-separated list of allowed origins, e.g.
+#   CORS_ORIGINS=https://app.example.com,http://localhost:5173
+# Defaults to "*" so a frontend works out of the box during the hackathon.
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
+_allowed_origins = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
+_allow_all_origins = _allowed_origins == ["*"]
+
+# Browsers reject a wildcard origin combined with credentials, so credentials
+# are only enabled once explicit origins are configured.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=not _allow_all_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")

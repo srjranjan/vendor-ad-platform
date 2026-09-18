@@ -64,3 +64,4 @@ would let you drop the pin and move to a newer Python.
 |----------------|----------|--------------------------------------------------------------|
 | `DATABASE_URL` | No       | Injected by Railway. Falls back to sqlite. Legacy `postgres://` scheme is rewritten automatically. |
 | `PORT`         | No       | Set by Railway; the start command binds to it.               |
+| `CORS_ORIGINS` | No       | Comma-separated allowed origins. Defaults to `*` (credentials disabled). Set explicit origins in production to enable credentials. |
