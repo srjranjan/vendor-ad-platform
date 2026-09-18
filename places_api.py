@@ -131,12 +131,18 @@ def nearby_places(
     category_clause = ""
     if category:
         params["category"] = category
-        category_clause = "AND LOWER(p.search_category) = LOWER(:category)"
+        # Match either field: the client sees category_label, but existing
+        # callers filter on search_category.
+        category_clause = (
+            "AND (LOWER(p.category_label) = LOWER(:category)"
+            " OR LOWER(p.search_category) = LOWER(:category))"
+        )
 
     rows = db.execute(
         text(
             f"""
-            SELECT p.id, p.google_place_id, p.name, p.search_category, p.latitude,
+            SELECT p.id, p.google_place_id, p.name, p.search_category,
+                   p.category_label, p.latitude,
                    p.longitude, p.address, p.phone, p.rating, p.image_url,
                    {HAVERSINE} AS distance_km
             FROM places p
@@ -244,7 +250,10 @@ def nearby_places(
             id=r["google_place_id"] or str(r["id"]),
             placeId=r["id"],
             name=r["name"],
-            category=r["search_category"],
+            # category_label is the display name ("Sweet shop"); search_category
+            # is the term the scrape searched for ("sweet shop"). The app shows
+            # the former, so fall back only when a place has no label.
+            category=r["category_label"] or r["search_category"],
             latitude=r["latitude"],
             longitude=r["longitude"],
             address=r["address"],
