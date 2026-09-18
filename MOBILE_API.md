@@ -84,7 +84,7 @@ curl "https://vendor-ad-platform-production.up.railway.app/api/v1/places/nearby\
           "vendor_id": "QM2JKZHCANRRJ74K",
           "name": "Weekend Brew & Dine Perk",
           "goal": "visits",
-          "format": "ISLAND",
+          "format": "HOOD_PICKS_BANNER",
           "category": "Food",
           "headline": "20% Off Craft Brews for Society Residents",
           "description": "Show your verified apartment badge and get flat 20% off.",
@@ -157,7 +157,7 @@ Present only when the place's vendor has a campaign running today.
 | `vendor_id` | string | 16-char vendor id |
 | `name` | string \| null | Campaign name |
 | `goal` | string \| null | Free text from the ad template, e.g. `visits`, `Calls` |
-| `format` | string | **UPPERCASE**: `ISLAND`, `TWO_X`, `NOTICE_BOARD`, `LIFT_BRANDING`, `GATE_ARCH`, `STANDEE` |
+| `format` | string | **UPPERCASE**: `HOOD_PICKS_BANNER`, `DOUBLE_WIDTH_BANNER` |
 | `category` | string \| null | `Retail`, `Real Estate`, `Food` |
 | `headline` | string | The ad's main line |
 | `description` | string \| null | |
@@ -302,7 +302,7 @@ Available categories include `restaurant`, `cafe`, `bakery`, `gym`, `salon`,
 
 ## Notes for integration
 
-- **`format` is uppercase** (`ISLAND`), not `island`. Map to display names
+- **`format` is uppercase** (`HOOD_PICKS_BANNER`). Map to display names
   client-side.
 - **`rating` is usually `null`** — only 21 of 429 places have one.
 - **`photoUrls` is always an array**, currently 0 or 1 URL. Do not assume

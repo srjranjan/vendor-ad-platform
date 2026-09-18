@@ -140,7 +140,7 @@ POST /api/v1/ad-templates
 {
   "vendor_id": "QM2JKZHCANRRJ74K",
   "goal": "visits",
-  "format": "ISLAND",
+  "format": "HOOD_PICKS_BANNER",
   "category": "Food",
   "headline": "20% Off Craft Brews for Society Residents",
   "description": "Show your verified apartment badge.",
