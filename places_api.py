@@ -63,7 +63,8 @@ class CampaignOut(BaseModel):
 
 
 class PlaceOut(BaseModel):
-    id: str
+    id: str            # Google place id - what the app should send back
+    placeId: int       # internal id, accepted by the same endpoints
     name: str
     category: Optional[str] = None
     latitude: float
@@ -241,6 +242,7 @@ def nearby_places(
         campaign = campaign_by_place.get(r["id"])
         places.append(PlaceOut(
             id=r["google_place_id"] or str(r["id"]),
+            placeId=r["id"],
             name=r["name"],
             category=r["search_category"],
             latitude=r["latitude"],
@@ -273,12 +275,27 @@ class RecommendRequest(BaseModel):
     app_user_id: str = Field(..., min_length=1, max_length=128)
 
 
-@places_router.post("/{place_id}/recommend", status_code=201)
-def recommend_place(place_id: int, payload: RecommendRequest, db: Session = Depends(get_db)):
+def _resolve_place_id(db: Session, place_ref: str) -> int:
+    """Accept whichever id the app has.
+
+    The feed exposes the Google place id, so that is what a client naturally
+    sends back; the internal integer id is accepted too.
+    """
     from main import Place
 
-    if not db.query(Place.id).filter(Place.id == place_id).first():
-        raise HTTPException(status_code=404, detail=f"Unknown place {place_id}")
+    row = db.query(Place.id).filter(Place.google_place_id == place_ref).first()
+    if row:
+        return row[0]
+    if place_ref.isdigit():
+        row = db.query(Place.id).filter(Place.id == int(place_ref)).first()
+        if row:
+            return row[0]
+    raise HTTPException(status_code=404, detail=f"Unknown place {place_ref}")
+
+
+@places_router.post("/{place_ref}/recommend", status_code=201)
+def recommend_place(place_ref: str, payload: RecommendRequest, db: Session = Depends(get_db)):
+    place_id = _resolve_place_id(db, place_ref)
 
     existing = db.query(PlaceRecommendation).filter(
         PlaceRecommendation.place_id == place_id,
@@ -296,8 +313,9 @@ def recommend_place(place_id: int, payload: RecommendRequest, db: Session = Depe
                      "isRecommendedByCurrentUser": True}}
 
 
-@places_router.delete("/{place_id}/recommend")
-def unrecommend_place(place_id: int, app_user_id: str = Query(...), db: Session = Depends(get_db)):
+@places_router.delete("/{place_ref}/recommend")
+def unrecommend_place(place_ref: str, app_user_id: str = Query(...), db: Session = Depends(get_db)):
+    place_id = _resolve_place_id(db, place_ref)
     db.query(PlaceRecommendation).filter(
         PlaceRecommendation.place_id == place_id,
         PlaceRecommendation.app_user_id == app_user_id,
