@@ -6,6 +6,7 @@ today. If the caller passes society_id, only campaigns that actually targeted
 that society are eligible, so delivery matches what the vendor paid for.
 """
 
+import re
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -352,6 +353,7 @@ class PlaceSearchResult(BaseModel):
     latitude: float
     longitude: float
     distanceKm: Optional[float] = None
+    matchScore: Optional[float] = None
     claimedByVendorId: Optional[str] = None
 
 
@@ -390,12 +392,17 @@ def search_places(
         raise HTTPException(status_code=400, detail="lat and lng must be given together")
 
     query = db.query(Place)
-    if q:
-        like = f"%{q.strip()}%"
-        query = query.filter(
-            func.lower(Place.name).like(func.lower(like))
-            | func.lower(Place.address).like(func.lower(like))
-        )
+    tokens = [t for t in re.split(r"\s+", q.strip().lower()) if t] if q else []
+    if tokens:
+        # Require every token somewhere in name or address, rather than the
+        # whole phrase as one substring: "natural ice" should still find
+        # "Naturals Ice Cream".
+        for token in tokens:
+            like = f"%{token}%"
+            query = query.filter(
+                func.lower(Place.name).like(like)
+                | func.lower(Place.address).like(like)
+            )
     if category:
         from sqlalchemy import or_
         cat_lower = category.strip().lower()
@@ -418,6 +425,41 @@ def search_places(
 
     rows = query.all()
 
+    phrase = q.strip().lower() if q else ""
+
+    def relevance(place) -> float:
+        """How well a place matches the typed query.
+
+        Name matches always beat address matches, and the earlier and more
+        completely the phrase appears in the name, the higher it ranks.
+        """
+        if not phrase:
+            return 0.0
+        name = (place.name or "").lower()
+        address = (place.address or "").lower()
+
+        if name == phrase:
+            score = 100.0
+        elif name.startswith(phrase):
+            score = 90.0
+        elif re.search(rf"\b{re.escape(phrase)}", name):
+            score = 80.0
+        elif phrase in name:
+            score = 70.0
+        elif phrase in address:
+            score = 40.0
+        else:
+            # Only individual tokens matched; rank by how many landed in the
+            # name rather than merely the address.
+            in_name = sum(1 for t in tokens if t in name)
+            score = 30.0 + 20.0 * (in_name / len(tokens)) if tokens else 0.0
+
+        # A shorter name containing the phrase is the more precise match:
+        # "Naturals Ice Cream" beats "Naturals Signature Salon Sarjapur Road".
+        if name:
+            score += 5.0 * len(phrase) / len(name)
+        return round(score, 3)
+
     def distance(place):
         if lat is None:
             return None
@@ -438,7 +480,15 @@ def search_places(
     if unclaimed_only:
         scored = [(p, d) for p, d in scored if p.id not in claimed]
 
-    scored.sort(key=lambda pair: (pair[1] if pair[1] is not None else 0, pair[0].name))
+    if phrase:
+        # Best match first; distance and then name only break ties.
+        scored.sort(key=lambda pair: (
+            -relevance(pair[0]),
+            pair[1] if pair[1] is not None else 0,
+            pair[0].name,
+        ))
+    else:
+        scored.sort(key=lambda pair: (pair[1] if pair[1] is not None else 0, pair[0].name))
     total = len(scored)
 
     return PlaceSearchResponse(
@@ -454,6 +504,7 @@ def search_places(
                 latitude=p.latitude,
                 longitude=p.longitude,
                 distanceKm=round(d, 3) if d is not None else None,
+                matchScore=relevance(p) if phrase else None,
                 claimedByVendorId=claimed.get(p.id),
             )
             for p, d in scored[:limit]
