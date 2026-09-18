@@ -1,10 +1,12 @@
 import os
 from datetime import datetime
+from enum import Enum
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     Float,
@@ -242,3 +244,267 @@ def create_ad(payload: AdCreate, db: Session = Depends(get_db)):
         status=campaign.status,
         targeted_society_ids=society_ids,
     )
+
+
+# ==========================================================================
+# Vendor registration
+# ==========================================================================
+
+# Dev-only: the OTP flow is simulated, no SMS provider is wired up.
+MOCK_OTP = "1234"
+
+
+class TechComfortLevel(str, Enum):
+    BEGINNER = "Beginner"
+    MODERATE = "Moderate"
+    ADVANCED = "Advanced"
+
+
+class VendorCategory(str, Enum):
+    """Closed set of vendor categories.
+
+    The client sends one of these values directly; mock_ai_categorize also
+    returns a member, so client-supplied and AI-derived categories share one
+    vocabulary and the column never holds a free-form string.
+    """
+
+    ORGANIC_GROCERIES = "Organic Groceries"
+    GROCERIES = "Groceries"
+    FRUITS_VEGETABLES = "Fruits & Vegetables"
+    DAIRY = "Dairy"
+    BAKERY = "Bakery"
+    FOOD_CATERING = "Food & Catering"
+    LAUNDRY = "Laundry"
+    SALON_BEAUTY = "Salon & Beauty"
+    HOME_SERVICES = "Home Services"
+    CLEANING_SERVICES = "Cleaning Services"
+    EDUCATION_TUTORING = "Education & Tutoring"
+    FITNESS_WELLNESS = "Fitness & Wellness"
+    PHARMACY = "Pharmacy"
+    RETAIL = "Retail"
+    UNCATEGORIZED = "Uncategorized"
+
+
+class Vendor(Base):
+    __tablename__ = "vendors"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_name = Column(String(255), nullable=False)
+    mobile_number = Column(String(20), nullable=False, unique=True, index=True)
+    raw_description = Column(String(2048), nullable=True)
+    ai_category = Column(String(255), nullable=True)
+    address_text = Column(String(512), nullable=True)
+    lat = Column(Float, nullable=True)
+    lng = Column(Float, nullable=True)
+    tech_comfort_level = Column(String(32), nullable=True)
+    is_verified = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class OTPVerification(Base):
+    """Record that a mobile number passed OTP verification.
+
+    Kept in the database rather than process memory so a restart or a second
+    Railway instance cannot lose it - an in-memory set would let a redeploy
+    silently drop verifications mid-signup.
+    """
+
+    __tablename__ = "otp_verifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mobile_number = Column(String(20), nullable=False, unique=True, index=True)
+    verified_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+# --------------------------------------------------------------------------
+# Vendor schemas
+# --------------------------------------------------------------------------
+
+
+class SendOTPRequest(BaseModel):
+    mobile_number: str = Field(..., min_length=10, max_length=20)
+
+
+class SendOTPResponse(BaseModel):
+    success: bool
+    message: str
+    vendor_exists: bool
+
+
+class VerifyOTPRequest(BaseModel):
+    mobile_number: str = Field(..., min_length=10, max_length=20)
+    otp: str = Field(..., min_length=4, max_length=4, pattern=r"^\d{4}$")
+
+
+class VerifyOTPResponse(BaseModel):
+    verified: bool
+
+
+class VendorRegistrationRequest(BaseModel):
+    business_name: str = Field(..., min_length=1, max_length=255)
+    mobile_number: str = Field(..., min_length=10, max_length=20)
+    raw_description: Optional[str] = None
+    address_text: Optional[str] = None
+    lat: Optional[float] = Field(None, ge=-90, le=90)
+    lng: Optional[float] = Field(None, ge=-180, le=180)
+    tech_comfort_level: Optional[TechComfortLevel] = None
+    # Sent by the client when the user confirms the AI's suggestion (or picks
+    # their own). Omitted -> the server derives it from raw_description.
+    ai_category: Optional[VendorCategory] = None
+
+
+class VendorResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    business_name: str
+    mobile_number: str
+    raw_description: Optional[str] = None
+    ai_category: Optional[str] = None
+    address_text: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    tech_comfort_level: Optional[str] = None
+    is_verified: bool
+
+
+# --------------------------------------------------------------------------
+# Mock AI categorisation
+# --------------------------------------------------------------------------
+
+# Ordered longest-phrase-first so "organic vegetables" wins over "vegetables".
+_CATEGORY_KEYWORDS = [
+    (("organic", "natural farming"), VendorCategory.ORGANIC_GROCERIES),
+    (("grocery", "groceries", "kirana", "provision"), VendorCategory.GROCERIES),
+    (("vegetable", "fruit", "sabzi", "produce"), VendorCategory.FRUITS_VEGETABLES),
+    (("milk", "dairy", "curd", "paneer"), VendorCategory.DAIRY),
+    (("bakery", "cake", "bread", "pastry"), VendorCategory.BAKERY),
+    (("tiffin", "meal", "food", "restaurant", "catering"), VendorCategory.FOOD_CATERING),
+    (("laundry", "dry clean", "ironing"), VendorCategory.LAUNDRY),
+    (("salon", "spa", "haircut", "beauty"), VendorCategory.SALON_BEAUTY),
+    (("plumb", "electric", "carpenter", "repair", "maintenance"), VendorCategory.HOME_SERVICES),
+    (("clean", "housekeeping", "pest"), VendorCategory.CLEANING_SERVICES),
+    (("tutor", "coaching", "class", "academy"), VendorCategory.EDUCATION_TUTORING),
+    (("gym", "fitness", "yoga", "trainer"), VendorCategory.FITNESS_WELLNESS),
+    (("pharma", "medical", "medicine", "chemist"), VendorCategory.PHARMACY),
+]
+
+
+def mock_ai_categorize(description: str) -> VendorCategory:
+    """Stand-in for the real AI categoriser.
+
+    Deterministic keyword matching so the endpoint behaves predictably until a
+    model is wired in. Swap the body out; the signature is what callers depend on.
+    """
+    if not description or not description.strip():
+        return VendorCategory.UNCATEGORIZED
+
+    text_lower = description.lower()
+    for keywords, category in _CATEGORY_KEYWORDS:
+        if any(keyword in text_lower for keyword in keywords):
+            return category
+    return VendorCategory.RETAIL
+
+
+# --------------------------------------------------------------------------
+# Vendor endpoints
+# --------------------------------------------------------------------------
+
+
+@app.post("/api/v1/vendors/send-otp", response_model=SendOTPResponse)
+def send_otp(payload: SendOTPRequest, db: Session = Depends(get_db)):
+    mobile = payload.mobile_number.strip()
+
+    existing = db.query(Vendor).filter(Vendor.mobile_number == mobile).first()
+    if existing:
+        # Not an error: the frontend uses this to route to sign-in instead of
+        # sign-up. Returning 200 keeps that branch simple.
+        return SendOTPResponse(
+            success=True,
+            message=f"Vendor already registered with {mobile}. OTP sent for sign-in.",
+            vendor_exists=True,
+        )
+
+    return SendOTPResponse(
+        success=True,
+        message=f"OTP sent to {mobile}.",
+        vendor_exists=False,
+    )
+
+
+@app.post("/api/v1/vendors/verify-otp", response_model=VerifyOTPResponse)
+def verify_otp(payload: VerifyOTPRequest, db: Session = Depends(get_db)):
+    if payload.otp != MOCK_OTP:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+
+    mobile = payload.mobile_number.strip()
+
+    # Upsert: re-verifying the same number refreshes the timestamp rather than
+    # tripping the unique constraint.
+    record = (
+        db.query(OTPVerification)
+        .filter(OTPVerification.mobile_number == mobile)
+        .first()
+    )
+    if record:
+        record.verified_at = datetime.utcnow()
+    else:
+        db.add(OTPVerification(mobile_number=mobile))
+    db.commit()
+
+    return VerifyOTPResponse(verified=True)
+
+
+@app.post("/api/v1/vendors/register", response_model=VendorResponse, status_code=201)
+def register_vendor(payload: VendorRegistrationRequest, db: Session = Depends(get_db)):
+    mobile = payload.mobile_number.strip()
+
+    verified = (
+        db.query(OTPVerification)
+        .filter(OTPVerification.mobile_number == mobile)
+        .first()
+    )
+    if not verified:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Mobile number {mobile} is not verified. "
+                "Call /api/v1/vendors/verify-otp before registering."
+            ),
+        )
+
+    if db.query(Vendor).filter(Vendor.mobile_number == mobile).first():
+        raise HTTPException(
+            status_code=409,
+            detail=f"A vendor is already registered with mobile number {mobile}",
+        )
+
+    vendor = Vendor(
+        business_name=payload.business_name,
+        mobile_number=mobile,
+        raw_description=payload.raw_description,
+        ai_category=(
+            payload.ai_category.value
+            if payload.ai_category
+            else mock_ai_categorize(payload.raw_description or "").value
+        ),
+        address_text=payload.address_text,
+        lat=payload.lat,
+        lng=payload.lng,
+        tech_comfort_level=(
+            payload.tech_comfort_level.value if payload.tech_comfort_level else None
+        ),
+        is_verified=True,
+    )
+    db.add(vendor)
+    db.commit()
+    db.refresh(vendor)
+
+    return VendorResponse.model_validate(vendor)
+
+
+@app.get("/api/v1/vendors/categories", response_model=List[str])
+def list_categories():
+    """Allowed `ai_category` values, so the client dropdown and the server
+    validation cannot drift apart."""
+    return [c.value for c in VendorCategory]
