@@ -23,8 +23,12 @@ EXPECTED = [
     "distance_km", "url", "source",
 ]
 
+# Google embeds the place id in the maps url, either as a ChIJ token or as a
+# pair of hex ids. Both identify the same place.
+_PLACE_ID = re.compile(r"!1s(0x[0-9a-f]+:0x[0-9a-f]+|ChIJ[\w-]+)")
+
 # The scrape leaves Private Use Area glyphs (map pin icons) in address text.
-_PUA = re.compile(r"[-]")
+_PUA = re.compile("[\ue000-\uf8ff]")
 _WS = re.compile(r"\s+")
 
 # Sentinels the scraper writes instead of leaving a field empty.
@@ -116,6 +120,8 @@ def main():
             "longitude": lng,
             "distance_km": to_float(row["distance_km"]),
             "url": url,
+            "google_place_id": (_PLACE_ID.search(url).group(1)
+                                if _PLACE_ID.search(url) else None),
             "source": clean(row["source"], 64),
         })
 

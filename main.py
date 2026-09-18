@@ -12,6 +12,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 import campaigns
 from campaigns import campaign_router
+import places_api
+from places_api import places_router
 import wallet
 from wallet import (
     Wallet,
@@ -171,6 +173,9 @@ class Place(Base):
     longitude = Column(Float, nullable=False)
     distance_km = Column(Float, nullable=True)
     url = Column(String(512), nullable=False, unique=True, index=True)
+    # Extracted from the maps url at import. Surfaced as the place id the
+    # mobile app sees, so it matches what Google would return.
+    google_place_id = Column(String(128), nullable=True, index=True)
     source = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -548,6 +553,12 @@ class Vendor(Base):
     lat = Column(Float, nullable=True)
     lng = Column(Float, nullable=True)
     tech_comfort_level = Column(String(32), nullable=True)
+    # The scraped place this vendor operates. One vendor per place, so an ad
+    # can be attributed to exactly one business on the map.
+    place_id = Column(
+        Integer, ForeignKey("places.id", ondelete="SET NULL"),
+        nullable=True, unique=True, index=True,
+    )
     is_verified = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -602,12 +613,16 @@ class VendorRegistrationRequest(BaseModel):
     # Sent by the client when the user confirms the AI's suggestion (or picks
     # their own). Omitted -> the server derives it from raw_description.
     ai_category: Optional[VendorCategory] = None
+    # Links the vendor to their listing on the map, so their campaigns can be
+    # attached to that place in the consumer app.
+    place_id: Optional[int] = None
 
 
 class VendorResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    place_id: Optional[int] = None
     business_name: str
     mobile_number: str
     raw_description: Optional[str] = None
@@ -738,8 +753,20 @@ def register_vendor(payload: VendorRegistrationRequest, db: Session = Depends(ge
             detail=f"A vendor is already registered with mobile number {mobile}",
         )
 
+    if payload.place_id is not None:
+        place = db.query(Place).filter(Place.id == payload.place_id).first()
+        if not place:
+            raise HTTPException(status_code=400, detail=f"Unknown place_id {payload.place_id}")
+        taken = db.query(Vendor.id).filter(Vendor.place_id == payload.place_id).first()
+        if taken:
+            raise HTTPException(
+                status_code=409,
+                detail=f"place_id {payload.place_id} is already claimed by another vendor",
+            )
+
     vendor = Vendor(
         id=_unique_vendor_id(db),
+        place_id=payload.place_id,
         business_name=payload.business_name,
         mobile_number=mobile,
         raw_description=payload.raw_description,
@@ -1027,3 +1054,4 @@ def campaign_nearby_societies(
 # Registered last: campaign_router declares GET /{campaign_id}, which would
 # otherwise shadow the static /api/v1/campaigns/nearby-societies path above.
 app.include_router(campaign_router)
+app.include_router(places_router)
