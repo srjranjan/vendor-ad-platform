@@ -31,6 +31,7 @@ FORMAT_MULTIPLIERS = {
     AdFormat.GATE_ARCH: Decimal("1.20"),     # highest footfall, every entry/exit
     AdFormat.LIFT_BRANDING: Decimal("0.80"),
     AdFormat.STANDEE: Decimal("0.60"),
+    AdFormat.TWO_X: Decimal("1.50"),         # double-size unit
     AdFormat.NOTICE_BOARD: Decimal("0.50"),  # lowest dwell time
 }
 

@@ -1,4 +1,5 @@
 import os
+import secrets
 from datetime import datetime
 import enum
 from enum import Enum
@@ -115,9 +116,15 @@ class AdTarget(Base):
 
 
 class AdFormat(str, Enum):
-    """Physical ad inventory a society can carry."""
+    """Physical ad inventory a society can carry.
+
+    One enum shared by ad_templates.format and society_ad_pricing.ad_format:
+    a template's format is looked up verbatim against the rate card, so the
+    two must never drift apart.
+    """
 
     ISLAND = "ISLAND"
+    TWO_X = "TWO_X"
     NOTICE_BOARD = "NOTICE_BOARD"
     LIFT_BRANDING = "LIFT_BRANDING"
     GATE_ARCH = "GATE_ARCH"
@@ -183,11 +190,6 @@ class Place(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class FormatEnum(str, enum.Enum):
-    ISLAND = "island"
-    TWO_X = "2x"
-
-
 class CategoryEnum(str, enum.Enum):
     RETAIL = "Retail"
     REAL_ESTATE = "Real Estate"
@@ -198,10 +200,15 @@ class AdTemplate(Base):
     __tablename__ = "ad_templates"
 
     id = Column(Integer, primary_key=True, index=True)
-    vendor_id = Column(String(128), nullable=False, index=True)
+    vendor_id = Column(
+        String(16), ForeignKey("vendors.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
     name = Column(String(255), nullable=True)
     goal = Column(String(64), nullable=False)
-    format = Column(SQLEnum(FormatEnum), nullable=False)
+    # Stored as text, validated by AdFormat. A native Postgres enum would need
+    # ALTER TYPE to add a format, and there is no migration tooling here.
+    format = Column(String(32), nullable=False, index=True)
     category = Column(SQLEnum(CategoryEnum), nullable=True)
     headline = Column(String(255), nullable=False)
     description = Column(String(2048), nullable=True)
@@ -263,7 +270,7 @@ class AdTemplateCreate(BaseModel):
     vendor_id: str
     name: Optional[str] = None
     goal: str
-    format: FormatEnum
+    format: AdFormat
     category: Optional[CategoryEnum] = None
     headline: str
     description: Optional[str] = None
@@ -277,7 +284,7 @@ class AdTemplateResponse(BaseModel):
     vendor_id: str
     name: Optional[str] = None
     goal: str
-    format: FormatEnum
+    format: AdFormat
     category: Optional[CategoryEnum] = None
     headline: str
     description: Optional[str] = None
@@ -490,10 +497,26 @@ class VendorCategory(str, Enum):
     UNCATEGORIZED = "Uncategorized"
 
 
+# Excludes 0/O/1/I/L: a vendor id shows up in support calls and invoices,
+# and those glyphs get misread aloud and mistyped.
+_VENDOR_ID_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+VENDOR_ID_LENGTH = 16
+
+
+def generate_vendor_id() -> str:
+    """A random 16-character vendor id.
+
+    Random rather than sequential so the id leaks no signup ordering or
+    customer count. The keyspace is 31**16, so collisions are not a practical
+    concern, but register() still retries on the off chance.
+    """
+    return "".join(secrets.choice(_VENDOR_ID_ALPHABET) for _ in range(VENDOR_ID_LENGTH))
+
+
 class Vendor(Base):
     __tablename__ = "vendors"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(String(16), primary_key=True, default=generate_vendor_id)
     business_name = Column(String(255), nullable=False)
     mobile_number = Column(String(20), nullable=False, unique=True, index=True)
     raw_description = Column(String(2048), nullable=True)
@@ -561,7 +584,7 @@ class VendorRegistrationRequest(BaseModel):
 class VendorResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: str
     business_name: str
     mobile_number: str
     raw_description: Optional[str] = None
@@ -660,6 +683,14 @@ def verify_otp(payload: VerifyOTPRequest, db: Session = Depends(get_db)):
     return VerifyOTPResponse(verified=True)
 
 
+def _unique_vendor_id(db: Session, attempts: int = 5) -> str:
+    for _ in range(attempts):
+        candidate = generate_vendor_id()
+        if not db.query(Vendor.id).filter(Vendor.id == candidate).first():
+            return candidate
+    raise HTTPException(status_code=500, detail="Could not allocate a vendor id")
+
+
 @app.post("/api/v1/vendors/register", response_model=VendorResponse, status_code=201)
 def register_vendor(payload: VendorRegistrationRequest, db: Session = Depends(get_db)):
     mobile = payload.mobile_number.strip()
@@ -685,6 +716,7 @@ def register_vendor(payload: VendorRegistrationRequest, db: Session = Depends(ge
         )
 
     vendor = Vendor(
+        id=_unique_vendor_id(db),
         business_name=payload.business_name,
         mobile_number=mobile,
         raw_description=payload.raw_description,
@@ -722,11 +754,19 @@ def list_categories():
 
 @app.post("/api/v1/ad-templates", response_model=AdTemplateResponse, status_code=201)
 def create_ad_template(payload: AdTemplateCreate, db: Session = Depends(get_db)):
+    # SQLite does not enforce foreign keys unless switched on per connection,
+    # so check explicitly and return 400 rather than relying on the database.
+    if not db.query(Vendor.id).filter(Vendor.id == payload.vendor_id).first():
+        raise HTTPException(
+            status_code=400, detail=f"Unknown vendor_id {payload.vendor_id}"
+        )
+
     template = AdTemplate(
         vendor_id=payload.vendor_id,
         name=payload.name or payload.headline,
         goal=payload.goal,
-        format=payload.format,
+        # .value so the column holds "ISLAND", not "AdFormat.ISLAND".
+        format=payload.format.value,
         category=payload.category,
         headline=payload.headline,
         description=payload.description,
