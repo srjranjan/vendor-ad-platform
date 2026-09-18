@@ -934,7 +934,11 @@ def list_ad_templates(vendor_id: Optional[str] = None, db: Session = Depends(get
     query = db.query(AdTemplate)
     if vendor_id:
         query = query.filter(AdTemplate.vendor_id == vendor_id)
-    templates = query.all()
+    # Newest first: the creative a vendor just made is the one they are
+    # looking for. id breaks ties, since several can share a timestamp.
+    templates = query.order_by(
+        AdTemplate.created_at.desc(), AdTemplate.id.desc()
+    ).all()
     return AdTemplateListResponse(
         status="success",
         sts=1,
