@@ -10,6 +10,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
+import campaigns
+from campaigns import campaign_router
 import wallet
 from wallet import (
     Wallet,
@@ -1020,3 +1022,8 @@ def campaign_nearby_societies(
         limit=limit,
         offset=offset,
     )
+
+
+# Registered last: campaign_router declares GET /{campaign_id}, which would
+# otherwise shadow the static /api/v1/campaigns/nearby-societies path above.
+app.include_router(campaign_router)
