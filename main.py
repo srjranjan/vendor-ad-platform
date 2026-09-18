@@ -109,19 +109,15 @@ class AdTarget(Base):
 
 
 class AdFormat(str, Enum):
-    """Physical ad inventory a society can carry.
+    """Ad placements a vendor can buy.
 
     One enum shared by ad_templates.format and society_ad_pricing.ad_format:
     a template's format is looked up verbatim against the rate card, so the
     two must never drift apart.
     """
 
-    ISLAND = "ISLAND"
-    TWO_X = "TWO_X"
-    NOTICE_BOARD = "NOTICE_BOARD"
-    LIFT_BRANDING = "LIFT_BRANDING"
-    GATE_ARCH = "GATE_ARCH"
-    STANDEE = "STANDEE"
+    HOOD_PICKS_BANNER = "HOOD_PICKS_BANNER"
+    DOUBLE_WIDTH_BANNER = "DOUBLE_WIDTH_BANNER"
 
 
 class SocietyAdPricing(Base):

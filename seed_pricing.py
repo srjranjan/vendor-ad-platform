@@ -27,12 +27,8 @@ TIERS = [
 # Relative value of each format against the tier base price.
 # These are an assumption - retune once real rate cards exist.
 FORMAT_MULTIPLIERS = {
-    AdFormat.ISLAND: Decimal("1.00"),        # premium ground-floor display
-    AdFormat.GATE_ARCH: Decimal("1.20"),     # highest footfall, every entry/exit
-    AdFormat.LIFT_BRANDING: Decimal("0.80"),
-    AdFormat.STANDEE: Decimal("0.60"),
-    AdFormat.TWO_X: Decimal("1.50"),         # double-size unit
-    AdFormat.NOTICE_BOARD: Decimal("0.50"),  # lowest dwell time
+    AdFormat.HOOD_PICKS_BANNER: Decimal("1.00"),    # standard banner unit
+    AdFormat.DOUBLE_WIDTH_BANNER: Decimal("1.50"),  # twice the width
 }
 
 MIN_PRICE = Decimal("100")
