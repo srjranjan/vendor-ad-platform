@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# local sqlite fallback db - never deploy this
+*.db
+*.sqlite3
