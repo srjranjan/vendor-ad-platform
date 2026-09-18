@@ -63,27 +63,40 @@ would let you drop the pin and move to a newer Python.
 Creatives are hosted on Cloudinary. The backend stores only URLs, so no
 credentials live on the server and there is no upload endpoint.
 
-**Setup (once):** in the Cloudinary console create an **unsigned upload
-preset** (Settings -> Upload -> Add upload preset -> Signing mode: Unsigned).
-Note the preset name and your cloud name.
+**Setup (once):** set `CLOUDINARY_URL` on the service (Railway -> Variables):
 
-**From the vendor portal**, upload straight to Cloudinary and send the
-returned `secure_url` as `media.url`:
+```
+CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>
+```
+
+Uploads are **signed**: the browser sends the file straight to Cloudinary, but
+this service issues the signature, so the API secret never reaches the client
+and the account needs no unsigned preset (which would let anyone who learns the
+cloud name upload into it).
 
 ```js
+// 1. ask this service to sign an upload
+const s = await fetch(`${API}/api/v1/uploads/cloudinary-signature?folder=ads`)
+              .then(r => r.json())
+
+// 2. upload straight to Cloudinary with that signature
 const form = new FormData()
 form.append("file", file)
-form.append("upload_preset", UPLOAD_PRESET)
+form.append("api_key", s.apiKey)
+form.append("timestamp", s.timestamp)
+form.append("folder", s.folder)
+form.append("signature", s.signature)
 
-const res = await fetch(
-  `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`,
-  { method: "POST", body: form },
-)
-const { secure_url } = await res.json()
+const { secure_url } = await fetch(s.uploadUrl, { method: "POST", body: form })
+                              .then(r => r.json())
 
-// then, creating the ad template:
+// 3. create the ad template with just the one url
 media: { url: secure_url, type: "image" }
 ```
+
+`folder` must be one of `ads`, `places`, `logos`. A signature is good for 10
+minutes. If `CLOUDINARY_URL` is unset the endpoint returns 503 rather than
+failing at upload time.
 
 **Send `url` only.** `thumbnail` (w_200) and `small_banner` (w_400) are derived
 server side from the same asset, with `c_limit,q_auto,f_auto` so images are not
