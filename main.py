@@ -880,6 +880,73 @@ def login_vendor(payload: VendorLoginRequest, db: Session = Depends(get_db)):
     return VendorResponse.model_validate(vendor)
 
 
+class LoginSendOTPResponse(BaseModel):
+    success: bool = True
+    message: str
+    mobile_number: str
+    business_name: str
+
+
+@app.post("/api/v1/vendors/login/send-otp", response_model=LoginSendOTPResponse)
+def login_send_otp(payload: SendOTPRequest, db: Session = Depends(get_db)):
+    """Start a sign-in. Refuses a number that has never registered.
+
+    Unlike the sign-up send-otp, which reports whether the vendor exists and
+    lets the caller decide, sign-in has nothing to offer an unknown number, so
+    it fails outright.
+    """
+    mobile = normalize_mobile(payload.mobile_number)
+
+    vendor = db.query(Vendor).filter(Vendor.mobile_number == mobile).first()
+    if not vendor:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No account found with mobile number {mobile}. Please sign up first.",
+        )
+
+    return LoginSendOTPResponse(
+        message=f"OTP sent to {mobile}.",
+        mobile_number=mobile,
+        business_name=vendor.business_name,
+    )
+
+
+@app.post("/api/v1/vendors/login/verify-otp", response_model=VendorResponse)
+def login_verify_otp(payload: VerifyOTPRequest, db: Session = Depends(get_db)):
+    """Finish a sign-in and return the vendor.
+
+    The number is re-checked here as well as in send-otp: a client could call
+    this one directly, and an account deleted between the two steps must not
+    still sign in.
+    """
+    mobile = normalize_mobile(payload.mobile_number)
+
+    vendor = db.query(Vendor).filter(Vendor.mobile_number == mobile).first()
+    if not vendor:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No account found with mobile number {mobile}. Please sign up first.",
+        )
+
+    if payload.otp != MOCK_OTP:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+
+    # Record the verification, same as sign-up, so a later action that checks
+    # it sees this number as verified.
+    record = (
+        db.query(OTPVerification)
+        .filter(OTPVerification.mobile_number == mobile)
+        .first()
+    )
+    if record:
+        record.verified_at = ist_now()
+    else:
+        db.add(OTPVerification(mobile_number=mobile))
+    db.commit()
+
+    return VendorResponse.model_validate(vendor)
+
+
 @app.get("/api/v1/vendors/me", response_model=VendorResponse)
 def get_current_vendor_profile(
     user_id: str = Depends(get_current_user), db: Session = Depends(get_db)
