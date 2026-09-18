@@ -25,6 +25,7 @@ from wallet import (
     wallet_exception_handler,
     WalletService,
     wallet_router,
+    get_current_user,
 )
 from sqlalchemy import (
     Boolean,
@@ -601,7 +602,7 @@ class Vendor(Base):
     mobile_number = Column(String(20), nullable=False, unique=True, index=True)
     raw_description = Column(String(2048), nullable=True)
     ai_category = Column(String(255), nullable=True)
-    address_text = Column(String(512), nullable=True)
+    address_text = Column(String(1024), nullable=True)
     lat = Column(Float, nullable=True)
     lng = Column(Float, nullable=True)
     tech_comfort_level = Column(String(32), nullable=True)
@@ -613,6 +614,17 @@ class Vendor(Base):
     )
     is_verified = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+def normalize_mobile(mobile: str) -> str:
+    """Standardize mobile numbers to +91XXXXXXXXXX format."""
+    cleaned = re.sub(r"[^\d+]", "", mobile.strip())
+    if not cleaned.startswith("+"):
+        if len(cleaned) == 10:
+            cleaned = f"+91{cleaned}"
+        elif len(cleaned) == 12 and cleaned.startswith("91"):
+            cleaned = f"+{cleaned}"
+    return cleaned
 
 
 class OTPVerification(Base):
@@ -686,6 +698,11 @@ class VendorResponse(BaseModel):
     is_verified: bool
 
 
+class VendorLoginRequest(BaseModel):
+    mobile_number: str = Field(..., min_length=10, max_length=20)
+    otp: Optional[str] = None
+
+
 # --------------------------------------------------------------------------
 # Mock AI categorisation
 # --------------------------------------------------------------------------
@@ -731,7 +748,7 @@ def mock_ai_categorize(description: str) -> VendorCategory:
 
 @app.post("/api/v1/vendors/send-otp", response_model=SendOTPResponse)
 def send_otp(payload: SendOTPRequest, db: Session = Depends(get_db)):
-    mobile = payload.mobile_number.strip()
+    mobile = normalize_mobile(payload.mobile_number)
 
     existing = db.query(Vendor).filter(Vendor.mobile_number == mobile).first()
     if existing:
@@ -755,7 +772,7 @@ def verify_otp(payload: VerifyOTPRequest, db: Session = Depends(get_db)):
     if payload.otp != MOCK_OTP:
         raise HTTPException(status_code=400, detail="Invalid OTP")
 
-    mobile = payload.mobile_number.strip()
+    mobile = normalize_mobile(payload.mobile_number)
 
     # Upsert: re-verifying the same number refreshes the timestamp rather than
     # tripping the unique constraint.
@@ -783,7 +800,7 @@ def _unique_vendor_id(db: Session, attempts: int = 5) -> str:
 
 @app.post("/api/v1/vendors/register", response_model=VendorResponse, status_code=201)
 def register_vendor(payload: VendorRegistrationRequest, db: Session = Depends(get_db)):
-    mobile = payload.mobile_number.strip()
+    mobile = normalize_mobile(payload.mobile_number)
 
     verified = (
         db.query(OTPVerification)
@@ -816,10 +833,15 @@ def register_vendor(payload: VendorRegistrationRequest, db: Session = Depends(ge
                 detail=f"place_id {payload.place_id} is already claimed by another vendor",
             )
 
+    # Handle exact latitude and longitude coordinates and formatted address
+    lat_val = float(payload.lat) if payload.lat is not None else None
+    lng_val = float(payload.lng) if payload.lng is not None else None
+    addr_val = (payload.address_text or "").strip()[:1024] if payload.address_text else None
+
     vendor = Vendor(
         id=_unique_vendor_id(db),
         place_id=payload.place_id,
-        business_name=payload.business_name,
+        business_name=payload.business_name.strip(),
         mobile_number=mobile,
         raw_description=payload.raw_description,
         ai_category=(
@@ -827,9 +849,9 @@ def register_vendor(payload: VendorRegistrationRequest, db: Session = Depends(ge
             if payload.ai_category
             else mock_ai_categorize(payload.raw_description or "").value
         ),
-        address_text=payload.address_text,
-        lat=payload.lat,
-        lng=payload.lng,
+        address_text=addr_val,
+        lat=lat_val,
+        lng=lng_val,
         tech_comfort_level=(
             payload.tech_comfort_level.value if payload.tech_comfort_level else None
         ),
@@ -842,6 +864,30 @@ def register_vendor(payload: VendorRegistrationRequest, db: Session = Depends(ge
     # Automatically initialize vendor wallet with INR currency and 0 balance
     WalletService.get_or_create_wallet(db, user_id=str(vendor.id))
 
+    return VendorResponse.model_validate(vendor)
+
+
+@app.post("/api/v1/vendors/login", response_model=VendorResponse)
+def login_vendor(payload: VendorLoginRequest, db: Session = Depends(get_db)):
+    mobile = normalize_mobile(payload.mobile_number)
+    vendor = db.query(Vendor).filter(Vendor.mobile_number == mobile).first()
+    if not vendor:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No account found with mobile number {mobile}. Please sign up first.",
+        )
+    if payload.otp and payload.otp != MOCK_OTP:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    return VendorResponse.model_validate(vendor)
+
+
+@app.get("/api/v1/vendors/me", response_model=VendorResponse)
+def get_current_vendor_profile(
+    user_id: str = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    vendor = db.query(Vendor).filter(Vendor.id == user_id).first()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
     return VendorResponse.model_validate(vendor)
 
 
@@ -1086,7 +1132,7 @@ def campaign_nearby_societies(
         ),
         societies=[
             TargetSociety(
-                id=r["id"],
+                id=str(r["id"]),
                 name=r["name"],
                 city=r["city"],
                 latitude=r["latitude"],
