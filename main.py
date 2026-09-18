@@ -5,9 +5,20 @@ import enum
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
+import wallet
+from wallet import (
+    Wallet,
+    Transaction,
+    WalletException,
+    wallet_exception_handler,
+    WalletService,
+    wallet_router,
+)
 from sqlalchemy import (
     Boolean,
     Column,
@@ -29,43 +40,15 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 # Database configuration
 # --------------------------------------------------------------------------
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-if not DATABASE_URL:
-    # Local/testing fallback so the app boots without a Postgres instance.
-    DATABASE_URL = "sqlite:///./vendor_ads.db"
-    print("[warn] DATABASE_URL not set - falling back to local sqlite (vendor_ads.db)")
-
-# Heroku-style URLs use the legacy "postgres://" scheme that SQLAlchemy 2.x rejects.
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
-IS_SQLITE = DATABASE_URL.startswith("sqlite")
-
-if IS_SQLITE:
-    engine_kwargs = {"connect_args": {"check_same_thread": False}}
-else:
-    # Railway Postgres caps concurrent connections, and drops idle ones.
-    # pool_pre_ping discards dead connections; pool_recycle stays under that
-    # idle timeout so we never hand out a socket the server already closed.
-    engine_kwargs = {
-        "pool_size": 5,
-        "max_overflow": 5,
-        "pool_timeout": 30,
-        "pool_recycle": 1800,
-    }
-
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, **engine_kwargs)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-Base = declarative_base()
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+from database import (
+    Base,
+    DATABASE_URL,
+    IS_SQLITE,
+    SessionLocal,
+    engine,
+    get_db,
+)
+# Wallet and Transaction models are registered via wallet import
 
 
 # --------------------------------------------------------------------------
@@ -296,7 +279,7 @@ class AdTemplateResponse(BaseModel):
 class AdTemplateListResponse(BaseModel):
     status: str = "success"
     sts: int = 1
-    data: List[AdTemplateResponse] = []
+    data: List[AdTemplateResponse]
 
 
 
@@ -322,6 +305,44 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(WalletException)
+def handle_wallet_exception(request: Request, exc: WalletException):
+    return wallet_exception_handler(request, exc)
+
+
+@app.exception_handler(RequestValidationError)
+def handle_validation_exception(request: Request, exc: RequestValidationError):
+    formatted_errors = [
+        {
+            "loc": [str(l) for l in e.get("loc", [])],
+            "msg": str(e.get("msg", "")),
+            "type": str(e.get("type", "")),
+        }
+        for e in exc.errors()
+    ]
+    if "/wallet" in request.url.path:
+        first_error = exc.errors()[0] if exc.errors() else {}
+        loc = ".".join(str(l) for l in first_error.get("loc", []))
+        msg = first_error.get("msg", "Validation error")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "error": {
+                    "code": "INVALID_AMOUNT" if "amount" in loc else "VALIDATION_ERROR",
+                    "message": f"Validation failed at '{loc}': {msg}",
+                    "details": {"errors": formatted_errors},
+                },
+            },
+        )
+    return JSONResponse(status_code=422, content={"detail": formatted_errors})
+
+
+# Mount wallet endpoints
+app.include_router(wallet_router, prefix="/api/wallet")
+app.include_router(wallet_router, prefix="/api/v1/wallet")
 
 
 @app.on_event("startup")
@@ -736,6 +757,9 @@ def register_vendor(payload: VendorRegistrationRequest, db: Session = Depends(ge
     db.add(vendor)
     db.commit()
     db.refresh(vendor)
+
+    # Automatically initialize vendor wallet with INR currency and 0 balance
+    WalletService.get_or_create_wallet(db, user_id=str(vendor.id))
 
     return VendorResponse.model_validate(vendor)
 
