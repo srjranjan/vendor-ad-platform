@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, func, text
 from sqlalchemy.orm import Session
 
-from database import Base, get_db
+from database import Base, get_db, ist_now, ist_today
 
 
 class PlaceRecommendation(Base):
@@ -32,7 +32,7 @@ class PlaceRecommendation(Base):
         Integer, ForeignKey("places.id", ondelete="CASCADE"), nullable=False, index=True
     )
     app_user_id = Column(String(128), nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=ist_now, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("place_id", "app_user_id", name="uq_place_recommendation"),
@@ -190,7 +190,7 @@ def nearby_places(
 
     campaign_by_place: Dict[int, Any] = {}
     if vendors:
-        today = date.today()
+        today = ist_today()
         candidates = db.query(Campaign).filter(
             Campaign.vendor_id.in_([v.id for v in vendors.values()]),
             Campaign.status.in_([CampaignStatus.ACTIVE.value,

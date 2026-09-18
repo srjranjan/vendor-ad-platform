@@ -23,7 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, relationship
 
-from database import Base, IS_SQLITE, get_db
+from database import Base, IS_SQLITE, get_db, ist_now, ist_today
 
 # ==============================================================================
 # 1. DATABASE MODELS (Direct INR, rupees - no paise conversion)
@@ -52,9 +52,9 @@ class Wallet(Base):
     balance = Column(Float, nullable=False, default=0.0)
     currency = Column(String(10), nullable=False, default="INR")
     status = Column(String(32), nullable=False, default="active")
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=ist_now, nullable=False)
     updated_at = Column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+        DateTime, default=ist_now, onupdate=ist_now, nullable=False
     )
 
     transactions = relationship(
@@ -88,9 +88,9 @@ class Transaction(Base):
     idempotency_key = Column(String(128), nullable=True, index=True)
     description = Column(String(512), nullable=True)
     metadata_ = Column("metadata", JSON, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=ist_now, nullable=False, index=True)
     updated_at = Column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+        DateTime, default=ist_now, onupdate=ist_now, nullable=False
     )
 
     wallet = relationship("Wallet", back_populates="transactions")
@@ -456,7 +456,7 @@ class WalletService:
             prev_balance = round(locked_wallet.balance, 2)
             new_balance = round(prev_balance + amount, 2)
             locked_wallet.balance = new_balance
-            locked_wallet.updated_at = datetime.utcnow()
+            locked_wallet.updated_at = ist_now()
 
             txn = Transaction(
                 id=generate_transaction_id(),
@@ -471,8 +471,8 @@ class WalletService:
                 idempotency_key=idempotency_key,
                 description=payload.description or "Wallet credit",
                 metadata_=payload.metadata,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=ist_now(),
+                updated_at=ist_now(),
             )
             db.add(txn)
             db.commit()
@@ -627,7 +627,7 @@ class WalletService:
 
         try:
             # Atomic conditional update prevents race conditions across all SQL engines
-            now = datetime.utcnow()
+            now = ist_now()
             result = db.execute(
                 update(Wallet)
                 .where(
@@ -680,8 +680,8 @@ class WalletService:
                 idempotency_key=idempotency_key,
                 description=payload.description or "Wallet debit",
                 metadata_=payload.metadata,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=ist_now(),
+                updated_at=ist_now(),
             )
             db.add(txn)
             db.commit()
@@ -943,7 +943,7 @@ class WalletService:
             prev_balance = round(locked_wallet.balance, 2)
             new_balance = round(prev_balance + refund_amount, 2)
             locked_wallet.balance = new_balance
-            locked_wallet.updated_at = datetime.utcnow()
+            locked_wallet.updated_at = ist_now()
 
             refund_txn = Transaction(
                 id=generate_transaction_id(),
@@ -956,8 +956,8 @@ class WalletService:
                 status="completed",
                 reference_id=original_txn_id,
                 description=f"{reason} (Ref: {original_txn_id})",
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=ist_now(),
+                updated_at=ist_now(),
             )
             db.add(refund_txn)
             db.commit()

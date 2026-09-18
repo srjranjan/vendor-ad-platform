@@ -25,7 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Session, relationship
 
-from database import Base, get_db
+from database import Base, get_db, ist_now, ist_today
 
 MAX_DURATION_DAYS = 90
 
@@ -83,7 +83,7 @@ class Campaign(Base):
                     index=True)
     debit_transaction_id = Column(String(64), nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=ist_now, nullable=False)
     activated_at = Column(DateTime, nullable=True)
     paused_at = Column(DateTime, nullable=True)
     ended_at = Column(DateTime, nullable=True)
@@ -112,7 +112,7 @@ class CampaignSociety(Base):
     )
     price_per_day = Column(Numeric(10, 2), nullable=False)
     flat_count = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=ist_now, nullable=False)
 
     campaign = relationship("Campaign", back_populates="societies")
 
@@ -145,7 +145,7 @@ def refresh_campaign(db: Session, campaign: Campaign, today: Optional[date] = No
 
     Called on every read and write instead of a scheduled job.
     """
-    today = today or date.today()
+    today = today or ist_today()
     status = CampaignStatus(campaign.status)
 
     if status in TERMINAL:
@@ -154,7 +154,7 @@ def refresh_campaign(db: Session, campaign: Campaign, today: Optional[date] = No
     # A scheduled campaign becomes active once its start date arrives.
     if status == CampaignStatus.SCHEDULED and today >= campaign.start_date:
         campaign.status = CampaignStatus.ACTIVE.value
-        campaign.activated_at = datetime.utcnow()
+        campaign.activated_at = ist_now()
         campaign.last_accrued_on = campaign.start_date - timedelta(days=1)
         status = CampaignStatus.ACTIVE
 
@@ -179,7 +179,7 @@ def refresh_campaign(db: Session, campaign: Campaign, today: Optional[date] = No
         # exceeding total_cost.
         if today > campaign.end_date:
             campaign.status = CampaignStatus.EXPIRED.value
-            campaign.ended_at = datetime.utcnow()
+            campaign.ended_at = ist_now()
 
     return campaign
 
@@ -305,8 +305,8 @@ def launch_campaign(payload: CampaignCreate, db: Session = Depends(get_db)):
     daily_cost = sum((Decimal(str(p)) for _, p, _ in priced), Decimal("0"))
     total_cost = daily_cost * Decimal(payload.duration_days)
 
-    start = payload.start_date or date.today()
-    if start < date.today():
+    start = payload.start_date or ist_today()
+    if start < ist_today():
         raise HTTPException(status_code=400, detail="start_date cannot be in the past")
     end = start + timedelta(days=payload.duration_days - 1)
 
@@ -323,9 +323,9 @@ def launch_campaign(payload: CampaignCreate, db: Session = Depends(get_db)):
         total_cost=total_cost,
         amount_spent=Decimal("0"),
         amount_refunded=Decimal("0"),
-        status=(CampaignStatus.ACTIVE if start <= date.today()
+        status=(CampaignStatus.ACTIVE if start <= ist_today()
                 else CampaignStatus.SCHEDULED).value,
-        activated_at=datetime.utcnow() if start <= date.today() else None,
+        activated_at=ist_now() if start <= ist_today() else None,
         last_accrued_on=start - timedelta(days=1),
     )
     db.add(campaign)
@@ -528,7 +528,7 @@ def pause_campaign(campaign_id: int, db: Session = Depends(get_db)):
     campaign = _load(db, campaign_id)
     assert_transition(campaign.status, CampaignStatus.PAUSED)
     campaign.status = CampaignStatus.PAUSED.value
-    campaign.paused_at = datetime.utcnow()
+    campaign.paused_at = ist_now()
     db.commit()
     db.refresh(campaign)
     return to_out(campaign)
@@ -542,7 +542,7 @@ def resume_campaign(campaign_id: int, db: Session = Depends(get_db)):
     # Push end_date out by however long it was paused: the vendor paid for a
     # number of days, not a window on the calendar.
     if campaign.paused_at:
-        paused_days = (date.today() - campaign.paused_at.date()).days
+        paused_days = (ist_today() - campaign.paused_at.date()).days
         if paused_days > 0:
             campaign.end_date = campaign.end_date + timedelta(days=paused_days)
     campaign.status = CampaignStatus.ACTIVE.value
@@ -551,7 +551,7 @@ def resume_campaign(campaign_id: int, db: Session = Depends(get_db)):
     # before the pause, and resuming the same day must not charge for it twice.
     campaign.last_accrued_on = max(
         campaign.last_accrued_on or (campaign.start_date - timedelta(days=1)),
-        date.today() - timedelta(days=1),
+        ist_today() - timedelta(days=1),
     )
     refresh_campaign(db, campaign)
     db.commit()
@@ -582,7 +582,7 @@ def cancel_campaign(campaign_id: int, db: Session = Depends(get_db)):
         campaign.amount_refunded = Decimal(campaign.amount_refunded or 0) + refund
 
     campaign.status = CampaignStatus.CANCELLED.value
-    campaign.ended_at = datetime.utcnow()
+    campaign.ended_at = ist_now()
     db.commit()
     db.refresh(campaign)
     return to_out(campaign)

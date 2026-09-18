@@ -55,6 +55,8 @@ from database import (
     SessionLocal,
     engine,
     get_db,
+    ist_now,
+    ist_today,
 )
 # Wallet and Transaction models are registered via wallet import
 
@@ -77,7 +79,7 @@ class Society(Base):
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     total_flats = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=ist_now)
 
 
 class AdCampaign(Base):
@@ -90,7 +92,7 @@ class AdCampaign(Base):
     image_url = Column(String(512), nullable=True)
     budget = Column(Float, default=0.0)
     status = Column(String(32), default="ACTIVE")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=ist_now)
 
 
 class AdTarget(Base):
@@ -103,7 +105,7 @@ class AdTarget(Base):
     society_id = Column(
         String(64), ForeignKey("societies.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=ist_now)
 
 
 class AdFormat(str, Enum):
@@ -144,8 +146,8 @@ class SocietyAdPricing(Base):
     price_per_day = Column(Numeric(10, 2), nullable=False)
     currency = Column(String(3), nullable=False, default="INR")
     is_active = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=ist_now)
+    updated_at = Column(DateTime, default=ist_now, onupdate=ist_now)
 
     __table_args__ = (
         UniqueConstraint("society_id", "ad_format", name="uq_society_ad_format"),
@@ -181,7 +183,7 @@ class Place(Base):
     # mobile app sees, so it matches what Google would return.
     google_place_id = Column(String(128), nullable=True, index=True)
     source = Column(String(64), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=ist_now)
 
 
 class CategoryEnum(str, enum.Enum):
@@ -208,7 +210,7 @@ class AdTemplate(Base):
     description = Column(String(2048), nullable=True)
     media = Column(JSON, nullable=True)
     cta = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=ist_now)
 
 
 # --------------------------------------------------------------------------
@@ -613,7 +615,7 @@ class Vendor(Base):
         nullable=True, unique=True, index=True,
     )
     is_verified = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=ist_now)
 
 
 def normalize_mobile(mobile: str) -> str:
@@ -639,7 +641,7 @@ class OTPVerification(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     mobile_number = Column(String(20), nullable=False, unique=True, index=True)
-    verified_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    verified_at = Column(DateTime, default=ist_now, nullable=False)
 
 
 # --------------------------------------------------------------------------
@@ -782,7 +784,7 @@ def verify_otp(payload: VerifyOTPRequest, db: Session = Depends(get_db)):
         .first()
     )
     if record:
-        record.verified_at = datetime.utcnow()
+        record.verified_at = ist_now()
     else:
         db.add(OTPVerification(mobile_number=mobile))
     db.commit()

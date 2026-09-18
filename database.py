@@ -43,3 +43,26 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# --------------------------------------------------------------------------
+# Time
+# --------------------------------------------------------------------------
+
+from datetime import datetime as _datetime, timedelta as _timedelta, timezone as _timezone
+
+# The product is India-only, and campaign start and end dates are calendar days
+# a vendor picked in IST. Running the date logic in UTC made a campaign
+# launched before 05:30 IST start on the previous day and expire the same
+# morning.
+IST = _timezone(_timedelta(hours=5, minutes=30))
+
+
+def ist_now() -> _datetime:
+    """Current IST time, naive, matching the naive DateTime columns."""
+    return _datetime.now(IST).replace(tzinfo=None)
+
+
+def ist_today():
+    """Today's date in IST."""
+    return _datetime.now(IST).date()
