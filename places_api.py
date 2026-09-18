@@ -327,3 +327,109 @@ def unrecommend_place(place_ref: str, app_user_id: str = Query(...), db: Session
     return {"status": "success",
             "data": {"placeId": place_id, "recommendationCount": count,
                      "isRecommendedByCurrentUser": False}}
+
+
+# --------------------------------------------------------------------------
+# Place search (vendor portal picker)
+# --------------------------------------------------------------------------
+
+
+class PlaceSearchResult(BaseModel):
+    placeId: int
+    googlePlaceId: Optional[str] = None
+    name: str
+    category: Optional[str] = None
+    address: Optional[str] = None
+    latitude: float
+    longitude: float
+    distanceKm: Optional[float] = None
+    claimedByVendorId: Optional[str] = None
+
+
+class PlaceSearchResponse(BaseModel):
+    status: str = "success"
+    query: Optional[str] = None
+    total: int
+    places: List[PlaceSearchResult]
+
+
+@places_router.get("/search", response_model=PlaceSearchResponse)
+def search_places(
+    q: Optional[str] = Query(None, min_length=2, description="Match on name or address"),
+    lat: Optional[float] = Query(None, ge=-90, le=90),
+    lng: Optional[float] = Query(None, ge=-180, le=180),
+    radius_km: Optional[float] = Query(None, gt=0, le=50),
+    category: Optional[str] = Query(None),
+    unclaimed_only: bool = Query(False, description="Hide places another vendor already holds"),
+    limit: int = Query(20, gt=0, le=100),
+    db: Session = Depends(get_db),
+):
+    """Find a place so a vendor can claim it.
+
+    Ordered by distance when lat/lng are given, otherwise by name. Each result
+    carries claimedByVendorId, so the portal can grey out places that are
+    already taken instead of letting the claim fail with a 409.
+    """
+    from main import Place, Vendor
+
+    if not q and lat is None and not category:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least one of: q, category, or lat+lng",
+        )
+    if (lat is None) != (lng is None):
+        raise HTTPException(status_code=400, detail="lat and lng must be given together")
+
+    query = db.query(Place)
+    if q:
+        like = f"%{q.strip()}%"
+        query = query.filter(
+            func.lower(Place.name).like(func.lower(like))
+            | func.lower(Place.address).like(func.lower(like))
+        )
+    if category:
+        query = query.filter(func.lower(Place.search_category) == category.lower())
+
+    rows = query.all()
+
+    def distance(place):
+        if lat is None:
+            return None
+        from math import asin, cos, radians, sin, sqrt
+        dlat = radians(lat - place.latitude)
+        dlng = radians(lng - place.longitude)
+        a = sin(dlat / 2) ** 2 + cos(radians(lat)) * cos(radians(place.latitude)) * sin(dlng / 2) ** 2
+        return 6371 * 2 * asin(sqrt(a))
+
+    scored = [(p, distance(p)) for p in rows]
+    if radius_km is not None and lat is not None:
+        scored = [(p, d) for p, d in scored if d is not None and d <= radius_km]
+
+    claimed = {
+        v.place_id: v.id
+        for v in db.query(Vendor).filter(Vendor.place_id.isnot(None)).all()
+    }
+    if unclaimed_only:
+        scored = [(p, d) for p, d in scored if p.id not in claimed]
+
+    scored.sort(key=lambda pair: (pair[1] if pair[1] is not None else 0, pair[0].name))
+    total = len(scored)
+
+    return PlaceSearchResponse(
+        query=q,
+        total=total,
+        places=[
+            PlaceSearchResult(
+                placeId=p.id,
+                googlePlaceId=p.google_place_id,
+                name=p.name,
+                category=p.category_label or p.search_category,
+                address=p.address,
+                latitude=p.latitude,
+                longitude=p.longitude,
+                distanceKm=round(d, 3) if d is not None else None,
+                claimedByVendorId=claimed.get(p.id),
+            )
+            for p, d in scored[:limit]
+        ],
+    )
