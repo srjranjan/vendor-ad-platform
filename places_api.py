@@ -397,7 +397,24 @@ def search_places(
             | func.lower(Place.address).like(func.lower(like))
         )
     if category:
-        query = query.filter(func.lower(Place.search_category) == category.lower())
+        from sqlalchemy import or_
+        cat_lower = category.strip().lower()
+        terms = [cat_lower]
+        if 'salon' in cat_lower:
+            terms.append('beauty parlour')
+        if 'beauty' in cat_lower:
+            terms.append('salon')
+        if 'grocery' in cat_lower:
+            terms.extend(['supermarket', 'general store'])
+        if 'restaurant' in cat_lower:
+            terms.extend(['food', 'sweets'])
+
+        clauses = []
+        for term in terms:
+            clauses.append(func.lower(Place.search_category).like(f"%{term}%"))
+            clauses.append(func.lower(Place.category_label).like(f"%{term}%"))
+            clauses.append(func.lower(Place.name).like(f"%{term}%"))
+        query = query.filter(or_(*clauses))
 
     rows = query.all()
 
