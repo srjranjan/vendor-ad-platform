@@ -1108,3 +1108,90 @@ def campaign_nearby_societies(
 app.include_router(campaign_router)
 app.include_router(places_router)
 app.include_router(uploads_router)
+
+
+# --------------------------------------------------------------------------
+# Vendor <-> place mapping
+# --------------------------------------------------------------------------
+
+
+class VendorPlaceRequest(BaseModel):
+    place_id: int
+
+
+class VendorPlaceResponse(BaseModel):
+    vendor_id: str
+    business_name: str
+    place_id: Optional[int] = None
+    place_name: Optional[str] = None
+    place_address: Optional[str] = None
+    place_category: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+
+def _vendor_place_response(vendor: Vendor, place: Optional[Place]) -> VendorPlaceResponse:
+    return VendorPlaceResponse(
+        vendor_id=vendor.id,
+        business_name=vendor.business_name,
+        place_id=vendor.place_id,
+        place_name=place.name if place else None,
+        place_address=place.address if place else None,
+        place_category=place.category_label if place else None,
+        latitude=place.latitude if place else None,
+        longitude=place.longitude if place else None,
+    )
+
+
+@app.get("/api/v1/vendors/{vendor_id}/place", response_model=VendorPlaceResponse)
+def get_vendor_place(vendor_id: str, db: Session = Depends(get_db)):
+    vendor = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+    if not vendor:
+        raise HTTPException(status_code=404, detail=f"Unknown vendor_id {vendor_id}")
+    place = db.query(Place).filter(Place.id == vendor.place_id).first() if vendor.place_id else None
+    return _vendor_place_response(vendor, place)
+
+
+@app.put("/api/v1/vendors/{vendor_id}/place", response_model=VendorPlaceResponse)
+def set_vendor_place(
+    vendor_id: str, payload: VendorPlaceRequest, db: Session = Depends(get_db)
+):
+    """Point a vendor at the place they operate from.
+
+    Registration can set this, but a vendor who signed up without one would
+    otherwise have no way to claim their listing later. Re-pointing an already
+    linked vendor is allowed; taking a place from another vendor is not.
+    """
+    vendor = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+    if not vendor:
+        raise HTTPException(status_code=404, detail=f"Unknown vendor_id {vendor_id}")
+
+    place = db.query(Place).filter(Place.id == payload.place_id).first()
+    if not place:
+        raise HTTPException(status_code=400, detail=f"Unknown place_id {payload.place_id}")
+
+    holder = db.query(Vendor).filter(
+        Vendor.place_id == payload.place_id, Vendor.id != vendor_id
+    ).first()
+    if holder:
+        raise HTTPException(
+            status_code=409,
+            detail=f"place_id {payload.place_id} is already claimed by vendor {holder.id}",
+        )
+
+    vendor.place_id = payload.place_id
+    db.commit()
+    db.refresh(vendor)
+    return _vendor_place_response(vendor, place)
+
+
+@app.delete("/api/v1/vendors/{vendor_id}/place", response_model=VendorPlaceResponse)
+def clear_vendor_place(vendor_id: str, db: Session = Depends(get_db)):
+    """Unlink a vendor from their place. Their ads stop appearing on the map."""
+    vendor = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+    if not vendor:
+        raise HTTPException(status_code=404, detail=f"Unknown vendor_id {vendor_id}")
+    vendor.place_id = None
+    db.commit()
+    db.refresh(vendor)
+    return _vendor_place_response(vendor, None)
