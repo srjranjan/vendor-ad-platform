@@ -1,7 +1,8 @@
 import os
 from datetime import datetime
+import enum
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +15,8 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    JSON,
+    Enum as SQLEnum,
     create_engine,
     text,
 )
@@ -138,6 +141,33 @@ class Place(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class FormatEnum(str, enum.Enum):
+    ISLAND = "island"
+    TWO_X = "2x"
+
+
+class CategoryEnum(str, enum.Enum):
+    RETAIL = "Retail"
+    REAL_ESTATE = "Real Estate"
+    FOOD = "Food"
+
+
+class AdTemplate(Base):
+    __tablename__ = "ad_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    vendor_id = Column(String(128), nullable=False, index=True)
+    name = Column(String(255), nullable=True)
+    goal = Column(String(64), nullable=False)
+    format = Column(SQLEnum(FormatEnum), nullable=False)
+    category = Column(SQLEnum(CategoryEnum), nullable=True)
+    headline = Column(String(255), nullable=False)
+    description = Column(String(2048), nullable=True)
+    media = Column(JSON, nullable=True)
+    cta = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # --------------------------------------------------------------------------
 # Pydantic schemas
 # --------------------------------------------------------------------------
@@ -171,6 +201,51 @@ class AdResponse(BaseModel):
     budget: float
     status: str
     targeted_society_ids: List[str]
+
+
+class MediaObject(BaseModel):
+    url: str
+    type: str
+    thumbnail: Optional[str] = None
+    small_banner: Optional[str] = None
+
+class CTAObject(BaseModel):
+    text: str
+    type: str
+    redirection: str
+
+class AdTemplateCreate(BaseModel):
+    vendor_id: str
+    name: Optional[str] = None
+    goal: str
+    format: FormatEnum
+    category: Optional[CategoryEnum] = None
+    headline: str
+    description: Optional[str] = None
+    media: Optional[MediaObject] = None
+    cta: Optional[CTAObject] = None
+
+class AdTemplateResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    vendor_id: str
+    name: Optional[str] = None
+    goal: str
+    format: FormatEnum
+    category: Optional[CategoryEnum] = None
+    headline: str
+    description: Optional[str] = None
+    media: Optional[MediaObject] = None
+    cta: Optional[CTAObject] = None
+    created_at: datetime
+
+
+class AdTemplateListResponse(BaseModel):
+    status: str = "success"
+    sts: int = 1
+    data: List[AdTemplateResponse] = []
+
 
 
 # --------------------------------------------------------------------------
@@ -558,3 +633,40 @@ def list_categories():
     """Allowed `ai_category` values, so the client dropdown and the server
     validation cannot drift apart."""
     return [c.value for c in VendorCategory]
+
+
+# --------------------------------------------------------------------------
+# Ad template endpoints
+# --------------------------------------------------------------------------
+
+
+@app.post("/api/v1/ad-templates", response_model=AdTemplateResponse, status_code=201)
+def create_ad_template(payload: AdTemplateCreate, db: Session = Depends(get_db)):
+    template = AdTemplate(
+        vendor_id=payload.vendor_id,
+        name=payload.name or payload.headline,
+        goal=payload.goal,
+        format=payload.format,
+        category=payload.category,
+        headline=payload.headline,
+        description=payload.description,
+        media=payload.media.model_dump() if payload.media else None,
+        cta=payload.cta.model_dump() if payload.cta else None,
+    )
+    db.add(template)
+    db.commit()
+    db.refresh(template)
+    return template
+
+
+@app.get("/api/v1/ad-templates", response_model=AdTemplateListResponse)
+def list_ad_templates(vendor_id: Optional[str] = None, db: Session = Depends(get_db)):
+    query = db.query(AdTemplate)
+    if vendor_id:
+        query = query.filter(AdTemplate.vendor_id == vendor_id)
+    templates = query.all()
+    return AdTemplateListResponse(
+        status="success",
+        sts=1,
+        data=templates,
+    )
