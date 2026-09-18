@@ -361,24 +361,160 @@ def _load(db: Session, campaign_id: int, vendor_id: Optional[str] = None) -> Cam
     return campaign
 
 
-@campaign_router.get("", response_model=List[CampaignOut])
+class CampaignListItem(BaseModel):
+    id: int
+    name: Optional[str] = None
+    status: CampaignStatus
+    ad_template_id: int
+    ad_headline: Optional[str] = None
+    ad_goal: Optional[str] = None
+    ad_format: str
+    start_date: date
+    end_date: date
+    duration_days: int
+    days_consumed: int
+    days_remaining: int
+    progress_pct: int
+    society_count: int
+    est_impressions_per_day: int
+    daily_cost: float
+    total_cost: float
+    amount_spent: float
+    amount_refunded: float
+
+
+class DashboardSummary(BaseModel):
+    total_campaigns: int
+    by_status: dict
+    live_campaigns: int
+    live_daily_cost: float
+    total_spent: float
+    total_refunded: float
+    committed_remaining: float
+    wallet_balance: float
+
+
+class CampaignDashboard(BaseModel):
+    vendor_id: str
+    summary: DashboardSummary
+    campaigns: List[CampaignListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+@campaign_router.get("", response_model=CampaignDashboard)
 def list_campaigns(
-    vendor_id: str = Query(...),
-    status: Optional[CampaignStatus] = Query(None),
-    limit: int = Query(50, gt=0, le=200),
+    vendor_id: str = Query(..., description="Vendor whose dashboard this is"),
+    status: Optional[CampaignStatus] = Query(None, description="Filter to one state"),
+    limit: int = Query(20, gt=0, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
-    q = db.query(Campaign).filter(Campaign.vendor_id == vendor_id)
-    campaigns = q.order_by(Campaign.created_at.desc()).limit(limit).offset(offset).all()
-    for c in campaigns:
+    """Campaigns for a vendor's dashboard, with portfolio totals.
+
+    Every campaign is refreshed first so a campaign that has silently expired
+    is counted under the state it is actually in. The summary covers the whole
+    portfolio rather than the returned page.
+    """
+    from main import AdTemplate, Vendor
+    from wallet import Wallet
+
+    if not db.query(Vendor.id).filter(Vendor.id == vendor_id).first():
+        raise HTTPException(status_code=404, detail=f"Unknown vendor_id {vendor_id}")
+
+    all_campaigns = db.query(Campaign).filter(Campaign.vendor_id == vendor_id).all()
+    for c in all_campaigns:
         refresh_campaign(db, c)
     db.commit()
-    # Filter after refreshing, so a campaign that just expired is classified
-    # under the state it is actually in rather than the one it was stored as.
-    if status:
-        campaigns = [c for c in campaigns if c.status == status.value]
-    return [to_out(c, include_societies=False) for c in campaigns]
+
+    by_status = {s.value: 0 for s in CampaignStatus}
+    total_spent = Decimal("0")
+    total_refunded = Decimal("0")
+    committed = Decimal("0")
+    live_daily = Decimal("0")
+    for c in all_campaigns:
+        by_status[c.status] = by_status.get(c.status, 0) + 1
+        total_spent += Decimal(c.amount_spent or 0)
+        total_refunded += Decimal(c.amount_refunded or 0)
+        if c.status in (CampaignStatus.ACTIVE.value, CampaignStatus.SCHEDULED.value,
+                        CampaignStatus.PAUSED.value):
+            committed += unspent(c)
+        if c.status == CampaignStatus.ACTIVE.value:
+            live_daily += Decimal(c.daily_cost)
+
+    selected = [c for c in all_campaigns
+                if status is None or c.status == status.value]
+    selected.sort(key=lambda c: c.created_at, reverse=True)
+    page = selected[offset:offset + limit]
+
+    # One query for the whole page instead of touching .societies per row.
+    ids = [c.id for c in page]
+    agg = {}
+    if ids:
+        for cid, count, flats in db.query(
+            CampaignSociety.campaign_id,
+            func.count(CampaignSociety.id),
+            func.coalesce(func.sum(CampaignSociety.flat_count), 0),
+        ).filter(CampaignSociety.campaign_id.in_(ids)).group_by(
+            CampaignSociety.campaign_id
+        ).all():
+            agg[cid] = (count, int(flats or 0))
+
+    templates = {}
+    tids = {c.ad_template_id for c in page}
+    if tids:
+        templates = {
+            t.id: t for t in db.query(AdTemplate).filter(AdTemplate.id.in_(tids)).all()
+        }
+
+    wallet = db.query(Wallet).filter(Wallet.user_id == vendor_id).first()
+
+    items = []
+    for c in page:
+        count, flats = agg.get(c.id, (0, 0))
+        tpl = templates.get(c.ad_template_id)
+        remaining = max(0, c.duration_days - c.days_consumed)
+        items.append(CampaignListItem(
+            id=c.id,
+            name=c.name,
+            status=CampaignStatus(c.status),
+            ad_template_id=c.ad_template_id,
+            ad_headline=tpl.headline if tpl else None,
+            ad_goal=tpl.goal if tpl else None,
+            ad_format=c.ad_format,
+            start_date=c.start_date,
+            end_date=c.end_date,
+            duration_days=c.duration_days,
+            days_consumed=c.days_consumed,
+            days_remaining=remaining,
+            progress_pct=int(round(100 * c.days_consumed / c.duration_days))
+            if c.duration_days else 0,
+            society_count=count,
+            est_impressions_per_day=flats * IMPRESSIONS_PER_FLAT_PER_DAY,
+            daily_cost=float(c.daily_cost),
+            total_cost=float(c.total_cost),
+            amount_spent=float(c.amount_spent or 0),
+            amount_refunded=float(c.amount_refunded or 0),
+        ))
+
+    return CampaignDashboard(
+        vendor_id=vendor_id,
+        summary=DashboardSummary(
+            total_campaigns=len(all_campaigns),
+            by_status=by_status,
+            live_campaigns=by_status.get(CampaignStatus.ACTIVE.value, 0),
+            live_daily_cost=float(live_daily),
+            total_spent=float(total_spent),
+            total_refunded=float(total_refunded),
+            committed_remaining=float(committed),
+            wallet_balance=float(wallet.balance) if wallet else 0.0,
+        ),
+        campaigns=items,
+        total=len(selected),
+        limit=limit,
+        offset=offset,
+    )
 
 
 @campaign_router.get("/{campaign_id}", response_model=CampaignOut)
