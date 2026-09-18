@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    text,
     Index,
     JSON,
     String,
@@ -41,7 +42,12 @@ class Wallet(Base):
     __tablename__ = "wallets"
 
     id = Column(String(64), primary_key=True, default=generate_wallet_id)
-    user_id = Column(String(128), nullable=False, unique=True, index=True)
+    # One wallet per vendor. FK is declared by table name so this module does
+    # not need to import main and create a cycle.
+    user_id = Column(
+        String(16), ForeignKey("vendors.id", ondelete="RESTRICT"),
+        nullable=False, unique=True, index=True,
+    )
     # Stored directly in INR (rupees). Never converted to paise.
     balance = Column(Float, nullable=False, default=0.0)
     currency = Column(String(10), nullable=False, default="INR")
@@ -67,7 +73,12 @@ class Transaction(Base):
     wallet_id = Column(
         String(64), ForeignKey("wallets.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    user_id = Column(String(128), nullable=False, index=True)
+    # Denormalised from the wallet so per-vendor history can be queried
+    # without a join; same FK so it cannot drift to an unknown vendor.
+    user_id = Column(
+        String(16), ForeignKey("vendors.id", ondelete="RESTRICT"),
+        nullable=False, index=True,
+    )
     type = Column(String(32), nullable=False, index=True)  # credit, debit, refund, reversal, adjustment
     amount = Column(Float, nullable=False)  # Direct INR (rupees)
     balance_before = Column(Float, nullable=False)  # Direct INR
@@ -312,12 +323,30 @@ class ErrorResponse(BaseModel):
 # ==============================================================================
 
 
+def _vendor_exists(db: Session, vendor_id: str) -> bool:
+    """Check a vendor row exists without importing main (which imports this
+    module), by querying the table directly."""
+    row = db.execute(
+        text("SELECT 1 FROM vendors WHERE id = :vid LIMIT 1"), {"vid": vendor_id}
+    ).first()
+    return row is not None
+
+
 class WalletService:
     @staticmethod
     def get_or_create_wallet(db: Session, user_id: str) -> Wallet:
         """Fetch the active wallet for user_id or initialize a new active INR wallet with balance 0."""
         wallet = db.query(Wallet).filter(Wallet.user_id == user_id).first()
         if not wallet:
+            # SQLite only enforces foreign keys when they are switched on per
+            # connection, so check explicitly: this must fail the same way on
+            # both backends rather than only in production.
+            if not _vendor_exists(db, user_id):
+                raise WalletException(
+                    status_code=404,
+                    code="VENDOR_NOT_FOUND",
+                    message=f"No vendor exists with id {user_id}",
+                )
             try:
                 wallet = Wallet(
                     id=generate_wallet_id(),

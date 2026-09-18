@@ -5,7 +5,12 @@ Run with: python migrate_wallet.py
 import sys
 from sqlalchemy import inspect
 from database import engine, Base
-import wallet  # Ensure Wallet and Transaction are registered with Base.metadata
+# Importing main registers every model on Base.metadata, including Vendor.
+# wallets.user_id and transactions.user_id are foreign keys to vendors.id, so
+# importing wallet alone leaves that table unknown and create_all fails with
+# NoReferencedTableError.
+import main  # noqa: F401
+import wallet  # noqa: F401
 
 
 def run_migration():

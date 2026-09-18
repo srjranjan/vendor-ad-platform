@@ -12,6 +12,24 @@ from wallet import Wallet, Transaction
 client = TestClient(app)
 
 
+def make_vendor() -> str:
+    """Register a real vendor and return its id.
+
+    wallets.user_id is a foreign key to vendors.id, so tests can no longer
+    invent an id: the wallet would be rejected by the database.
+    """
+    mobile = f"+9198{uuid.uuid4().int % 100000000:08d}"
+    client.post("/api/v1/vendors/send-otp", json={"mobile_number": mobile})
+    client.post("/api/v1/vendors/verify-otp", json={"mobile_number": mobile, "otp": "1234"})
+    res = client.post(
+        "/api/v1/vendors/register",
+        json={"business_name": "Test Store", "mobile_number": mobile},
+    )
+    assert res.status_code == 201, res.text
+    return res.json()["id"]
+
+
+
 @pytest.fixture(autouse=True)
 def setup_db():
     Base.metadata.create_all(bind=engine)
@@ -32,8 +50,8 @@ def test_auth_required():
 
 def test_user_isolation():
     """User A should never see or modify User B's wallet or transactions."""
-    user_a_header = {"Authorization": "Bearer user_isolation_a"}
-    user_b_header = {"Authorization": "Bearer user_isolation_b"}
+    user_a_header = {"Authorization": f"Bearer {make_vendor()}"}
+    user_b_header = {"Authorization": f"Bearer {make_vendor()}"}
 
     # Credit User A with 5000
     res_a = client.post(
@@ -60,7 +78,7 @@ def test_user_isolation():
 
 def test_api_v1_prefix_parity():
     """Verify both /api/wallet and /api/v1/wallet prefixes work equivalently."""
-    user_id = f"user_v1_{uuid.uuid4().hex[:6]}"
+    user_id = make_vendor()
     headers = {"Authorization": f"Bearer {user_id}"}
 
     # Credit via /api/v1/wallet/credit
@@ -100,7 +118,7 @@ def test_vendor_registration_auto_wallet():
 
 def test_transaction_filtering_and_pagination():
     """Verify transaction pagination and filtering by type."""
-    user = f"user_filter_{uuid.uuid4().hex[:6]}"
+    user = make_vendor()
     headers = {"Authorization": f"Bearer {user}"}
 
     # Create 3 credits and 2 debits
@@ -151,7 +169,7 @@ def test_complete_prompt_scenario():
     STEP 5: Debit 20,000  -> FAILS (Insufficient balance), Wallet remains 15,500
     STEP 6: Debit twice with same Idempotency-Key -> Debited only once
     """
-    test_user = f"user_test_scenario_{uuid.uuid4().hex[:8]}"
+    test_user = make_vendor()
     headers = {"Authorization": f"Bearer {test_user}"}
 
     # START: Check initial balance = 0
@@ -299,7 +317,7 @@ def test_complete_prompt_scenario():
 
 def test_refund_scenario():
     """Verify refund creates a new refund record and restores balance without modifying original."""
-    test_user = f"user_refund_{uuid.uuid4().hex[:8]}"
+    test_user = make_vendor()
     headers = {"Authorization": f"Bearer {test_user}"}
 
     # Credit 5000
@@ -339,7 +357,7 @@ def test_concurrent_debits():
     Two concurrent debit requests: Request A = 800, Request B = 500.
     Both together would exceed 1,000. Exactly one must succeed and one must fail.
     """
-    test_user = f"user_concurrent_{uuid.uuid4().hex[:8]}"
+    test_user = make_vendor()
     headers = {"Authorization": f"Bearer {test_user}"}
 
     # Fund wallet with 1,000
