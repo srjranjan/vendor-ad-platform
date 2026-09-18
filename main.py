@@ -814,3 +814,209 @@ def list_ad_templates(vendor_id: Optional[str] = None, db: Session = Depends(get
         sts=1,
         data=templates,
     )
+
+
+# ==========================================================================
+# Campaign audience selection (Launch Campaign - step 2)
+# ==========================================================================
+
+
+class TargetingMode(str, Enum):
+    RADIUS = "RADIUS"
+    ENTIRE_CITY = "ENTIRE_CITY"
+    ENTIRE_STATE = "ENTIRE_STATE"
+    MULTI_STATE = "MULTI_STATE"
+    PAN_INDIA = "PAN_INDIA"
+
+
+class TargetSociety(BaseModel):
+    id: str
+    name: str
+    city: Optional[str] = None
+    latitude: float
+    longitude: float
+    flat_count: int
+    distance_km: Optional[float] = None
+    price_per_day: float
+    est_impressions_per_day: int
+
+
+class AudienceCenter(BaseModel):
+    latitude: float
+    longitude: float
+    source: str = "vendor_business_location"
+
+
+class AudienceSummary(BaseModel):
+    """Totals over every matching society, not just the returned page."""
+
+    society_count: int
+    total_flats: int
+    est_impressions_per_day: int
+    total_price_per_day: float
+
+
+class NearbySocietiesResponse(BaseModel):
+    ad_format: AdFormat
+    targeting_mode: TargetingMode
+    radius_km: Optional[float] = None
+    center: Optional[AudienceCenter] = None
+    summary: AudienceSummary
+    societies: List[TargetSociety]
+    limit: int
+    offset: int
+
+
+@app.get("/api/v1/campaigns/nearby-societies", response_model=NearbySocietiesResponse)
+def campaign_nearby_societies(
+    vendor_id: str = Query(..., description="Vendor launching the campaign"),
+    ad_template_id: int = Query(..., description="Template being launched; its format sets the rate card"),
+    targeting: TargetingMode = Query(TargetingMode.RADIUS),
+    radius_km: float = Query(5.0, ge=1, le=30, description="Only used when targeting=RADIUS"),
+    limit: int = Query(50, gt=0, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Societies a vendor can target for a given template.
+
+    The centre is the vendor's own business location and the format comes from
+    the template, so the caller supplies neither. Societies with no active
+    price for that format are not sellable and are left out entirely.
+    """
+    vendor = db.query(Vendor).filter(Vendor.id == vendor_id).first()
+    if not vendor:
+        raise HTTPException(status_code=404, detail=f"Unknown vendor_id {vendor_id}")
+
+    template = db.query(AdTemplate).filter(AdTemplate.id == ad_template_id).first()
+    if not template:
+        raise HTTPException(
+            status_code=404, detail=f"Unknown ad_template_id {ad_template_id}"
+        )
+    if template.vendor_id != vendor_id:
+        raise HTTPException(
+            status_code=403,
+            detail="That ad template belongs to a different vendor",
+        )
+
+    if targeting in (
+        TargetingMode.ENTIRE_STATE,
+        TargetingMode.MULTI_STATE,
+        TargetingMode.PAN_INDIA,
+    ):
+        # societies carries no state or region column, so these tiers cannot be
+        # resolved. Refusing beats silently returning the whole catalogue and
+        # quoting a price for it.
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"{targeting.value} targeting is not available: societies have no "
+                "state or region data. Use RADIUS or ENTIRE_CITY."
+            ),
+        )
+
+    params = {"ad_format": template.format, "limit": limit, "offset": offset}
+    center = None
+
+    if targeting == TargetingMode.RADIUS:
+        if vendor.lat is None or vendor.lng is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Vendor has no business location set, so radius targeting has "
+                    "no centre. Set lat/lng on the vendor, or use ENTIRE_CITY."
+                ),
+            )
+        center = AudienceCenter(latitude=vendor.lat, longitude=vendor.lng)
+        params.update({"lat": vendor.lat, "lng": vendor.lng, "radius": radius_km})
+        where = f"{HAVERSINE_SQL} <= :radius"
+        distance_select = f"{HAVERSINE_SQL} AS distance_km"
+        order_by = "distance_km ASC"
+    else:
+        # Entire city: the vendor has no city column, so use the city of the
+        # society nearest their business location.
+        city = None
+        if vendor.lat is not None and vendor.lng is not None:
+            city = db.execute(
+                text(
+                    f"SELECT s.city FROM societies s "
+                    f"WHERE s.city IS NOT NULL ORDER BY {HAVERSINE_SQL} ASC LIMIT 1"
+                ),
+                {"lat": vendor.lat, "lng": vendor.lng},
+            ).scalar()
+        if not city:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Could not determine the vendor's city: no business location "
+                    "is set on the vendor."
+                ),
+            )
+        params["city"] = city
+        where = "LOWER(s.city) = LOWER(:city)"
+        distance_select = "NULL AS distance_km"
+        order_by = "s.total_flats DESC"
+
+    join = """
+        FROM societies s
+        JOIN society_ad_pricing p
+          ON p.society_id = s.id
+         AND p.ad_format = :ad_format
+         AND p.is_active = TRUE
+    """
+
+    summary = db.execute(
+        text(
+            f"""
+            SELECT COUNT(*) AS society_count,
+                   COALESCE(SUM(s.total_flats), 0) AS total_flats,
+                   COALESCE(SUM(p.price_per_day), 0) AS total_price_per_day
+            {join}
+            WHERE {where}
+            """
+        ),
+        params,
+    ).mappings().one()
+
+    rows = db.execute(
+        text(
+            f"""
+            SELECT s.id, s.name, s.city, s.latitude, s.longitude, s.total_flats,
+                   p.price_per_day, {distance_select}
+            {join}
+            WHERE {where}
+            ORDER BY {order_by}
+            LIMIT :limit OFFSET :offset
+            """
+        ),
+        params,
+    ).mappings().all()
+
+    total_flats = int(summary["total_flats"] or 0)
+    return NearbySocietiesResponse(
+        ad_format=AdFormat(template.format),
+        targeting_mode=targeting,
+        radius_km=radius_km if targeting == TargetingMode.RADIUS else None,
+        center=center,
+        summary=AudienceSummary(
+            society_count=summary["society_count"],
+            total_flats=total_flats,
+            est_impressions_per_day=total_flats * IMPRESSIONS_PER_FLAT_PER_DAY,
+            total_price_per_day=float(summary["total_price_per_day"] or 0),
+        ),
+        societies=[
+            TargetSociety(
+                id=r["id"],
+                name=r["name"],
+                city=r["city"],
+                latitude=r["latitude"],
+                longitude=r["longitude"],
+                flat_count=r["total_flats"] or 0,
+                distance_km=round(float(r["distance_km"]), 2) if r["distance_km"] is not None else None,
+                price_per_day=float(r["price_per_day"]),
+                est_impressions_per_day=(r["total_flats"] or 0) * IMPRESSIONS_PER_FLAT_PER_DAY,
+            )
+            for r in rows
+        ],
+        limit=limit,
+        offset=offset,
+    )
