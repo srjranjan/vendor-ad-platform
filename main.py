@@ -118,6 +118,7 @@ class AdFormat(str, Enum):
 
     HOOD_PICKS_BANNER = "HOOD_PICKS_BANNER"
     DOUBLE_WIDTH_BANNER = "DOUBLE_WIDTH_BANNER"
+    ISLAND_BANNER = "ISLAND_BANNER"
 
 
 class SocietyAdPricing(Base):

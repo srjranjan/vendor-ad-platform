@@ -17,14 +17,14 @@ from database import engine
 # standard banner rather than being dropped, so no template or campaign is
 # left holding a format the API will reject.
 REMAP = {
-    "ISLAND": "HOOD_PICKS_BANNER",
+    "ISLAND": "ISLAND_BANNER",
     "TWO_X": "DOUBLE_WIDTH_BANNER",
     "NOTICE_BOARD": "HOOD_PICKS_BANNER",
     "LIFT_BRANDING": "HOOD_PICKS_BANNER",
     "GATE_ARCH": "HOOD_PICKS_BANNER",
     "STANDEE": "HOOD_PICKS_BANNER",
 }
-CURRENT = {"HOOD_PICKS_BANNER", "DOUBLE_WIDTH_BANNER"}
+CURRENT = {"HOOD_PICKS_BANNER", "DOUBLE_WIDTH_BANNER", "ISLAND_BANNER"}
 
 
 def main():
@@ -49,7 +49,8 @@ def main():
         # deleted rather than remapped - keeping them would collide with the
         # unique (society, format) constraint.
         removed = c.execute(text(
-            "delete from society_ad_pricing where ad_format not in ('HOOD_PICKS_BANNER','DOUBLE_WIDTH_BANNER')"
+            "delete from society_ad_pricing where ad_format not in "
+            "('HOOD_PICKS_BANNER','DOUBLE_WIDTH_BANNER','ISLAND_BANNER')"
         )).rowcount
         print(f"\nremoved {removed} pricing rows on retired formats")
 

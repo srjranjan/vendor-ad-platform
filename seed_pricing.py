@@ -28,6 +28,7 @@ TIERS = [
 # These are an assumption - retune once real rate cards exist.
 FORMAT_MULTIPLIERS = {
     AdFormat.HOOD_PICKS_BANNER: Decimal("1.00"),    # standard banner unit
+    AdFormat.ISLAND_BANNER: Decimal("1.25"),        # interrupts the feed
     AdFormat.DOUBLE_WIDTH_BANNER: Decimal("1.50"),  # twice the width
 }
 

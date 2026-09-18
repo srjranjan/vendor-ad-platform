@@ -157,7 +157,7 @@ Present only when the place's vendor has a campaign running today.
 | `vendor_id` | string | 16-char vendor id |
 | `name` | string \| null | Campaign name |
 | `goal` | string \| null | Free text from the ad template, e.g. `visits`, `Calls` |
-| `format` | string | **UPPERCASE**: `HOOD_PICKS_BANNER`, `DOUBLE_WIDTH_BANNER` |
+| `format` | string | **UPPERCASE**: `HOOD_PICKS_BANNER`, `ISLAND_BANNER`, `DOUBLE_WIDTH_BANNER` |
 | `category` | string \| null | `Retail`, `Real Estate`, `Food` |
 | `headline` | string | The ad's main line |
 | `description` | string \| null | |
