@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 from datetime import datetime
 import enum
@@ -9,7 +10,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import campaigns
 from campaigns import campaign_router
 import places_api
@@ -245,11 +246,60 @@ class AdResponse(BaseModel):
     targeted_society_ids: List[str]
 
 
+# Creatives live in Cloudinary. A delivery url looks like
+#   https://res.cloudinary.com/<cloud>/image/upload[/<transforms>]/v<ver>/<public_id>
+# and every size is the same image with a different transform segment, so the
+# portal uploads once and the other two sizes are derived here.
+_CLOUDINARY_URL = re.compile(
+    r"^(https://res\.cloudinary\.com/[^/]+/image/upload/)(.*)$"
+)
+# A transform segment is comma-joined tokens like "w_800,c_limit,q_auto".
+_TRANSFORM_SEGMENT = re.compile(r"^[a-z]{1,3}_[^,/]+(?:,[a-z]{1,3}_[^,/]+)*$")
+
+MEDIA_WIDTHS = {"thumbnail": 200, "small_banner": 400, "url": 800}
+
+
+def cloudinary_variant(url: str, width: int) -> Optional[str]:
+    """Same Cloudinary asset at a different width, or None if not Cloudinary."""
+    match = _CLOUDINARY_URL.match(url or "")
+    if not match:
+        return None
+    prefix, rest = match.groups()
+    parts = rest.split("/")
+    # Drop any transform the caller already applied, rather than chaining a
+    # second resize on top of it.
+    if parts and _TRANSFORM_SEGMENT.match(parts[0]) and not re.fullmatch(r"v\d+", parts[0]):
+        parts = parts[1:]
+    return f"{prefix}w_{width},c_limit,q_auto,f_auto/" + "/".join(parts)
+
+
 class MediaObject(BaseModel):
     url: str
     type: str
     thumbnail: Optional[str] = None
     small_banner: Optional[str] = None
+
+    @field_validator("url")
+    @classmethod
+    def _url_must_be_http(cls, v: str) -> str:
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("media.url must be an http(s) URL")
+        return v
+
+    @model_validator(mode="after")
+    def _derive_sizes(self):
+        """Fill the missing sizes from the uploaded Cloudinary asset.
+
+        Non-Cloudinary urls are left exactly as given, so an external image
+        still works - it just has to supply its own sizes.
+        """
+        if cloudinary_variant(self.url, MEDIA_WIDTHS["url"]) is None:
+            return self
+        if not self.thumbnail:
+            self.thumbnail = cloudinary_variant(self.url, MEDIA_WIDTHS["thumbnail"])
+        if not self.small_banner:
+            self.small_banner = cloudinary_variant(self.url, MEDIA_WIDTHS["small_banner"])
+        return self
 
 class CTAObject(BaseModel):
     text: str
