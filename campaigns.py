@@ -172,7 +172,12 @@ def refresh_campaign(db: Session, campaign: Campaign, today: Optional[date] = No
                 )
             campaign.last_accrued_on = min(today, campaign.end_date)
 
-        if campaign.days_consumed >= campaign.duration_days or today > campaign.end_date:
+        # Expire only once end_date has passed. Day one is accrued the moment a
+        # campaign launches, so testing days_consumed >= duration_days here
+        # ended a one-day campaign on its own start date, and cost every other
+        # campaign its final day. The accrual cap above already stops spend
+        # exceeding total_cost.
+        if today > campaign.end_date:
             campaign.status = CampaignStatus.EXPIRED.value
             campaign.ended_at = datetime.utcnow()
 
