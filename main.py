@@ -14,9 +14,11 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     JSON,
     Enum as SQLEnum,
+    UniqueConstraint,
     create_engine,
     text,
 )
@@ -112,6 +114,46 @@ class AdTarget(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class AdFormat(str, Enum):
+    """Physical ad inventory a society can carry."""
+
+    ISLAND = "ISLAND"
+    NOTICE_BOARD = "NOTICE_BOARD"
+    LIFT_BRANDING = "LIFT_BRANDING"
+    GATE_ARCH = "GATE_ARCH"
+    STANDEE = "STANDEE"
+
+
+class SocietyAdPricing(Base):
+    """Per-day rate card: one row per (society, ad format).
+
+    A society with no active row for a format cannot be targeted with that
+    format, so coverage here is effectively the sellable inventory.
+
+    price_per_day is Numeric, not Float: these are summed across hundreds of
+    societies and up to 90 days, and binary float drift would stop the total
+    shown at Review reconciling with what the wallet is debited.
+    """
+
+    __tablename__ = "society_ad_pricing"
+
+    id = Column(Integer, primary_key=True, index=True)
+    society_id = Column(
+        String(64), ForeignKey("societies.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    ad_format = Column(String(32), nullable=False, index=True)
+    price_per_day = Column(Numeric(10, 2), nullable=False)
+    currency = Column(String(3), nullable=False, default="INR")
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("society_id", "ad_format", name="uq_society_ad_format"),
+    )
+
+
 class Place(Base):
     """Points of interest scraped around a locality.
 
@@ -181,6 +223,9 @@ class NearbySociety(BaseModel):
     longitude: float
     total_flats: Optional[int] = 0
     distance_km: float
+    # Present only when the request names an ad_format.
+    price_per_day: Optional[float] = None
+    est_impressions_per_day: Optional[int] = None
 
 
 class AdCreate(BaseModel):
@@ -287,12 +332,16 @@ def health():
 HAVERSINE_SQL = """
     6371 * 2 * ASIN(
         SQRT(
-            POWER(SIN(RADIANS(:lat - latitude) / 2), 2)
-            + COS(RADIANS(:lat)) * COS(RADIANS(latitude))
-            * POWER(SIN(RADIANS(:lng - longitude) / 2), 2)
+            POWER(SIN(RADIANS(:lat - s.latitude) / 2), 2)
+            + COS(RADIANS(:lat)) * COS(RADIANS(s.latitude))
+            * POWER(SIN(RADIANS(:lng - s.longitude) / 2), 2)
         )
     )
 """
+
+
+# Each flat is assumed to yield this many ad impressions per day.
+IMPRESSIONS_PER_FLAT_PER_DAY = 2
 
 
 @app.get("/api/v1/societies/nearby", response_model=List[NearbySociety])
@@ -301,21 +350,48 @@ def societies_nearby(
     lng: float = Query(..., ge=-180, le=180),
     radius_km: float = Query(5.0, gt=0, le=500),
     limit: int = Query(50, gt=0, le=500),
+    ad_format: Optional[AdFormat] = Query(
+        None,
+        description="Restrict to societies that carry this format, and return "
+                    "its price. Omit to list all nearby societies.",
+    ),
     db: Session = Depends(get_db),
 ):
-    sql = text(
-        f"""
-        SELECT id, name, city, latitude, longitude, total_flats,
-               {HAVERSINE_SQL} AS distance_km
-        FROM societies
-        WHERE {HAVERSINE_SQL} <= :radius
-        ORDER BY distance_km ASC
-        LIMIT :limit
-        """
-    )
-    rows = db.execute(
-        sql, {"lat": lat, "lng": lng, "radius": radius_km, "limit": limit}
-    ).mappings().all()
+    params = {"lat": lat, "lng": lng, "radius": radius_km, "limit": limit}
+
+    if ad_format:
+        # Inner join: a society with no active price for this format is not
+        # sellable, so it must not appear in the audience picker at all.
+        params["ad_format"] = ad_format.value
+        sql = text(
+            f"""
+            SELECT s.id, s.name, s.city, s.latitude, s.longitude, s.total_flats,
+                   p.price_per_day AS price_per_day,
+                   {HAVERSINE_SQL} AS distance_km
+            FROM societies s
+            JOIN society_ad_pricing p
+              ON p.society_id = s.id
+             AND p.ad_format = :ad_format
+             AND p.is_active = TRUE
+            WHERE {HAVERSINE_SQL} <= :radius
+            ORDER BY distance_km ASC
+            LIMIT :limit
+            """
+        )
+    else:
+        sql = text(
+            f"""
+            SELECT s.id, s.name, s.city, s.latitude, s.longitude, s.total_flats,
+                   NULL AS price_per_day,
+                   {HAVERSINE_SQL} AS distance_km
+            FROM societies s
+            WHERE {HAVERSINE_SQL} <= :radius
+            ORDER BY distance_km ASC
+            LIMIT :limit
+            """
+        )
+
+    rows = db.execute(sql, params).mappings().all()
 
     return [
         NearbySociety(
@@ -326,6 +402,10 @@ def societies_nearby(
             longitude=r["longitude"],
             total_flats=r["total_flats"] or 0,
             distance_km=round(float(r["distance_km"]), 3),
+            price_per_day=float(r["price_per_day"]) if r["price_per_day"] is not None else None,
+            est_impressions_per_day=(
+                (r["total_flats"] or 0) * IMPRESSIONS_PER_FLAT_PER_DAY if ad_format else None
+            ),
         )
         for r in rows
     ]
