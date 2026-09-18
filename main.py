@@ -70,7 +70,10 @@ def get_db():
 class Society(Base):
     __tablename__ = "societies"
 
-    id = Column(Integer, primary_key=True, index=True)
+    # The id from the source export, used directly as the primary key, so
+    # re-importing updates rows in place and ids match the source system.
+    # Not auto-generated: every society must arrive with an id.
+    id = Column(String(64), primary_key=True)
     name = Column(String(255), nullable=False)
     address = Column(String(512), nullable=True)
     city = Column(String(128), nullable=True)
@@ -101,7 +104,7 @@ class AdTarget(Base):
         Integer, ForeignKey("ad_campaigns.id", ondelete="CASCADE"), nullable=False, index=True
     )
     society_id = Column(
-        Integer, ForeignKey("societies.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("societies.id", ondelete="CASCADE"), nullable=False, index=True
     )
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -112,7 +115,7 @@ class AdTarget(Base):
 
 
 class NearbySociety(BaseModel):
-    id: int
+    id: str
     name: str
     city: Optional[str] = None
     latitude: float
@@ -127,7 +130,7 @@ class AdCreate(BaseModel):
     description: Optional[str] = None
     image_url: Optional[str] = None
     budget: float = 0.0
-    society_ids: List[int] = Field(..., min_length=1)
+    society_ids: List[str] = Field(..., min_length=1)
 
 
 class AdResponse(BaseModel):
@@ -138,7 +141,7 @@ class AdResponse(BaseModel):
     image_url: Optional[str] = None
     budget: float
     status: str
-    targeted_society_ids: List[int]
+    targeted_society_ids: List[str]
 
 
 # --------------------------------------------------------------------------

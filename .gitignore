@@ -9,3 +9,7 @@ __pycache__/
 # local sqlite fallback db - never deploy this
 *.db
 *.sqlite3
+
+# data exports - re-exportable from BigQuery, keep out of git
+*.xlsx
+*.xls
