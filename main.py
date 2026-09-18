@@ -697,11 +697,6 @@ class VendorResponse(BaseModel):
     is_verified: bool
 
 
-class VendorLoginRequest(BaseModel):
-    mobile_number: str = Field(..., min_length=10, max_length=20)
-    otp: Optional[str] = None
-
-
 # --------------------------------------------------------------------------
 # Mock AI categorisation
 # --------------------------------------------------------------------------
@@ -863,20 +858,6 @@ def register_vendor(payload: VendorRegistrationRequest, db: Session = Depends(ge
     # Automatically initialize vendor wallet with INR currency and 0 balance
     WalletService.get_or_create_wallet(db, user_id=str(vendor.id))
 
-    return VendorResponse.model_validate(vendor)
-
-
-@app.post("/api/v1/vendors/login", response_model=VendorResponse)
-def login_vendor(payload: VendorLoginRequest, db: Session = Depends(get_db)):
-    mobile = normalize_mobile(payload.mobile_number)
-    vendor = db.query(Vendor).filter(Vendor.mobile_number == mobile).first()
-    if not vendor:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No account found with mobile number {mobile}. Please sign up first.",
-        )
-    if payload.otp and payload.otp != MOCK_OTP:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
     return VendorResponse.model_validate(vendor)
 
 
