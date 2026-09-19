@@ -183,6 +183,33 @@ class Place(Base):
     created_at = Column(DateTime, default=ist_now)
 
 
+class PlaceSociety(Base):
+    """Societies a place serves.
+
+    A place sits near a handful of societies, and that relationship exists
+    independently of anything a vendor buys: it is a property of the location,
+    not of a campaign. Used to suggest target societies when a vendor claims
+    the place.
+    """
+
+    __tablename__ = "place_societies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    place_id = Column(
+        Integer, ForeignKey("places.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    society_id = Column(
+        String(64), ForeignKey("societies.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    created_at = Column(DateTime, default=ist_now)
+
+    __table_args__ = (
+        UniqueConstraint("place_id", "society_id", name="uq_place_society"),
+    )
+
+
 class CategoryEnum(str, enum.Enum):
     RETAIL = "Retail"
     REAL_ESTATE = "Real Estate"

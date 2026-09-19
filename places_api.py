@@ -549,3 +549,60 @@ def search_places(
             for p, d in scored[:limit]
         ],
     )
+
+
+# --------------------------------------------------------------------------
+# Societies a place serves
+# --------------------------------------------------------------------------
+
+
+class LinkedSociety(BaseModel):
+    societyId: str
+    name: str
+    city: Optional[str] = None
+    totalFlats: int
+    latitude: float
+    longitude: float
+
+
+class PlaceSocietiesResponse(BaseModel):
+    status: str = "success"
+    placeId: int
+    placeName: str
+    total: int
+    societies: List[LinkedSociety]
+
+
+@places_router.get("/{place_ref}/societies", response_model=PlaceSocietiesResponse)
+def place_societies(place_ref: str, db: Session = Depends(get_db)):
+    """Societies attached to a place.
+
+    Independent of any campaign: this is where the place sits, not what a
+    vendor bought. The portal uses it to pre-select target societies when a
+    vendor claims their listing.
+    """
+    from main import Place, PlaceSociety, Society
+
+    place_id = _resolve_place_id(db, place_ref)
+    place = db.query(Place).filter(Place.id == place_id).first()
+
+    rows = (
+        db.query(Society)
+        .join(PlaceSociety, PlaceSociety.society_id == Society.id)
+        .filter(PlaceSociety.place_id == place_id)
+        .order_by(Society.total_flats.desc(), Society.name)
+        .all()
+    )
+    return PlaceSocietiesResponse(
+        placeId=place_id,
+        placeName=place.name,
+        total=len(rows),
+        societies=[
+            LinkedSociety(
+                societyId=s.id, name=s.name, city=s.city,
+                totalFlats=s.total_flats or 0,
+                latitude=s.latitude, longitude=s.longitude,
+            )
+            for s in rows
+        ],
+    )
